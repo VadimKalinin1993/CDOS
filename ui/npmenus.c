@@ -11,6 +11,7 @@
 #include "ipc.h"
 #include "playback.h"   /* playback_display_state: the Cast view */
 #include "cast_ui.h"
+#include "folderbrowser.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -61,20 +62,24 @@ static void first_artist(const char *raw, char *out, int n){
 static lv_obj_t *menu_row(lv_obj_t *list, const char *text, lv_event_cb_t cb, void *ud){
     lv_obj_t *r = lv_button_create(list);
     lv_obj_remove_style_all(r);
-    lv_obj_set_size(r, 268, 52);
-    lv_obj_set_style_radius(r, 12, 0);
-    lv_obj_set_style_bg_color(r, TC(SURFACE), 0);
-    lv_obj_set_style_bg_opa(r, LV_OPA_70, 0);
-    lv_obj_set_style_bg_color(r, TC(SURFACE_PRESSED), LV_STATE_PRESSED);
+    lv_obj_set_size(r, 296, 52);                       /* redesign: the folder list's row (296 x 52) - flat, text, chevron */
+    lv_obj_set_style_radius(r, 8, 0);
+    lv_obj_set_style_bg_color(r, TC(LIST_PRESSED), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(r, LV_OPA_70, LV_STATE_PRESSED);
     lv_obj_clear_flag(r, LV_OBJ_FLAG_SCROLLABLE);
     ui_on(r, cb, LV_EVENT_CLICKED, ud, "npmenus.cb", UI_CORE);
+    lv_obj_t *ch = lv_label_create(r);
+    lv_label_set_text(ch, LV_SYMBOL_RIGHT);
+    lv_obj_set_pos(ch, 268, 17);
+    lv_obj_set_style_text_font(ch, TF(UI_18), 0);
+    lv_obj_set_style_text_color(ch, TC(TEXT_DISABLED), 0);
     lv_obj_t *l = indic_label_create(r);
     lv_label_set_text(l, tr(text));
-    lv_obj_set_pos(l, 16, 16);
-    lv_obj_set_style_text_font(l, TF(USER_16), 0);   /* rows carry playlist names: chain (issue #3) */
+    lv_obj_set_pos(l, 16, 14);
+    lv_obj_set_style_text_font(l, TF(USER_18), 0);   /* rows carry playlist names: chain (issue #3) */
     lv_obj_set_style_text_color(l, TC(TEXT_PRIMARY), 0);
     if(indic_text(text)) {
-        lv_obj_set_size(l, 236, indic_line_height(text, lv_obj_get_style_text_font(l, 0)));
+        lv_obj_set_size(l, 244, indic_line_height(text, lv_obj_get_style_text_font(l, 0)));
         lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
         indic_row_fit(r, l, NULL);
     }
@@ -90,10 +95,10 @@ static lv_obj_t *panel_header(lv_obj_t *root, const char *title){
 static lv_obj_t *panel_list(lv_obj_t *root){
     lv_obj_t *list = lv_obj_create(root);
     lv_obj_remove_style_all(list);
-    lv_obj_set_pos(list, 46, 76); lv_obj_set_size(list, 280, 250);
+    lv_obj_set_pos(list, 32, 72); lv_obj_set_size(list, 300, 288);
     lv_obj_set_style_pad_bottom(list, 44, 0);   /* last row scrolls clear of the round bottom bezel */
     lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_pad_row(list, 10, 0);
+    lv_obj_set_style_pad_row(list, 4, 0);
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
@@ -105,6 +110,8 @@ static void ctx_info_cb(lv_event_t *e){ if(lv_event_get_code(e)==LV_EVENT_CLICKE
 static void ctx_lyrics_cb(lv_event_t *e){ if(lv_event_get_code(e)==LV_EVENT_CLICKED){ lyrics_open(); } }
 static void ctx_album_cb(lv_event_t *e){
     if(lv_event_get_code(e)!=LV_EVENT_CLICKED) return;
+    /* redesign: the album is the folder the song is in - open it in Library with the song marked; Back = the artist */
+    if(g_path[0]){ folderbrowser_open_at(g_path); return; }
     /* drill the canonical DB album for this track (its path), not the player's
      * metadata album string, which may not match the DB and show an empty list */
     char dbal[160], dbar[160];
@@ -386,8 +393,8 @@ static void nphub_populate(void){
         else lv_obj_remove_flag(g_hub_dots[i], LV_OBJ_FLAG_HIDDEN);
     }
     theme_title_text(g_hub_header, tr(rx ? "AIRPLAY" : "Options"));
-    lv_obj_set_pos(g_hub_list, rx ? 60 : 46, rx ? 108 : 76);
-    lv_obj_set_size(g_hub_list, rx ? 240 : 280, rx ? 144 : 250);
+    lv_obj_set_pos(g_hub_list, 32, rx ? 108 : 72);   /* CDOS: the 296 px rows, centred like every list */
+    lv_obj_set_size(g_hub_list, 300, rx ? 144 : 288);
     lv_obj_set_style_text_color(g_hub_header, rx ? theme_preset_color(0, THEME_CLR_ACCENT_PRIMARY) : g_hub_color, 0);
     if(rx){
         lv_obj_t *row = menu_row(g_hub_list, "Return to Local", hub_local_cb, NULL);
@@ -398,22 +405,14 @@ static void nphub_populate(void){
     }
     track_state_t raw, st; ipc_get_state(&raw); playback_display_state(&st, &raw);   /* 15b: the Cast track never gets the book menu */
     int book = st.path[0] && ui_view_is_book(st.path);
-    beam_row(g_hub_list);
+    snprintf(g_beam_shown, sizeof g_beam_shown, "%s", beam_value());   /* no Beam row: keep the refresh timer quiet */
     if(book){
         /* navigate, understand the book, then the rest - the order the listener reaches for most first */
         menu_row(g_hub_list, "Chapters",        hub_chapters_cb, NULL);
         menu_row(g_hub_list, "Book details",    ctx_info_cb,     NULL);   /* Song Info screen, relabelled for books */
-        menu_row(g_hub_list, "Equalizer",       hub_eq_cb,       NULL);
-        menu_row(g_hub_list, "Full-screen Art", hub_fsart_cb,    NULL);
-    } else {
-        menu_row(g_hub_list, "Up Next",         hub_upnext_cb, NULL);
-        menu_row(g_hub_list, "Full-screen Art", hub_fsart_cb,  NULL);
-        menu_row(g_hub_list, "Equalizer",       hub_eq_cb,     NULL);
-        menu_row(g_hub_list, "Song Info",       ctx_info_cb,   NULL);
-        menu_row(g_hub_list, "Lyrics",          ctx_lyrics_cb, NULL);
+    } else {   /* redesign: the album (its folder) first, then Song Info. No Beam, Up Next, art, EQ, lyrics, playlists */
         menu_row(g_hub_list, "Go to Album",     ctx_album_cb,  NULL);
-        menu_row(g_hub_list, "Go to Artist",    ctx_artist_cb, NULL);
-        menu_row(g_hub_list, "Add to Playlist", ctx_addpl_cb,  NULL);
+        menu_row(g_hub_list, "Song Info",       ctx_info_cb,   NULL);
     }
 }
 /* 18 (carry-over L1): the Beam row's value follows the session while Options is open (a lost connection, the sleep timer, the Disc starting to play).

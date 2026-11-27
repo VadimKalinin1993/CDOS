@@ -370,6 +370,11 @@ int theme_trait(theme_trait_t t){ return (unsigned)t < THEME_TRAIT_COUNT && (g_t
 
 /* flat list rows: no card, a hairline underneath, accent drill-down chevrons, and the pressed row as an accent-outlined
  * pill (assets/reference/something/library_dark.png). Default theme: nothing changes. */
+/* Redesign: a slider's whole track is visible (a pale grey, fully opaque), so its range and its minimum read at a glance */
+void theme_slider_track(lv_obj_t *sl){
+    lv_obj_set_style_bg_color(sl, TC(CONTROL_TRACK_STRONG), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(sl, LV_OPA_COVER, LV_PART_MAIN);
+}
 void theme_settings_switch(lv_obj_t *sw){
     lv_obj_set_size(sw, 44, 24);
     lv_obj_set_style_radius(sw, LV_RADIUS_CIRCLE, LV_PART_MAIN);

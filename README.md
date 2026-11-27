@@ -1,3 +1,19 @@
+# CDOS
+
+**CDOS is a personal redesign of [diskOS](https://github.com/b0hemia/diskOS) by [b0hemia](https://github.com/b0hemia)**
+for the FiiO Snowsky Disc. diskOS is a great piece of work: a complete round-screen music interface, its installer,
+recovery tools and update system are all the original author's. CDOS keeps all of that and replaces the look and
+the navigation to fit one owner's taste: a simpler Home screen, Library that opens straight on the SD card folders,
+a flat settings list, Lucide line icons and a "vinyl" cover mode.
+
+- Everything below this section is the original diskOS README. Install, restore and recovery work exactly as there.
+- CDOS updates are signed with CDOS's own key. A player flashed with stock diskOS will not accept them, and a CDOS
+  player will not accept official diskOS updates.
+- If you like the interface itself, please support the original project: <https://ko-fi.com/b0hemia>.
+- License: GPL-3.0-or-later, the same as diskOS. Copyright notices of the diskOS contributors are kept in every file.
+
+---
+
 <p align="center">
   <img src="docs/assets/themes-home.png" alt="Eight diskOS themes on the Disc Home screen" width="100%">
 </p>

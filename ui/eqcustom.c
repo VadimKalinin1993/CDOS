@@ -397,7 +397,7 @@ static void make_col(lv_obj_t *parent, int idx, const char *flabel,
     lv_slider_set_mode(sl, LV_SLIDER_MODE_SYMMETRICAL);   /* fill from 0 dB centre */
     lv_slider_set_range(sl, -12, 12);
     lv_slider_set_value(sl, 0, LV_ANIM_OFF);
-    lv_obj_set_style_bg_color(sl, TC(CONTROL_TRACK), LV_PART_MAIN);
+    theme_slider_track(sl);
     lv_obj_set_style_bg_color(sl, TC(ACCENT_PRIMARY), LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(sl, TC(CONTROL_KNOB), LV_PART_KNOB);
     ui_on(sl, band_cb, LV_EVENT_VALUE_CHANGED, (void*)(intptr_t)idx, "eqcustom.band.value", UI_CORE);

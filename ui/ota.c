@@ -815,7 +815,7 @@ const char *ota_err_text(int code){
     case OTA_E_SPACE: return "Not enough space on the device";
     case OTA_E_UNSUPPORTED: return "Updates are not supported on this install";
     case OTA_E_OFF: return "Updates are turned off in Settings";
-    case OTA_E_SIG: return "Update rejected - not signed by diskOS";
+    case OTA_E_SIG: return "Update rejected - not signed for CDOS";
     case OTA_E_OLDER: return "Update refused - older than what you have";
     case OTA_E_BAD: return "Update rejected - the download is damaged";
     case OTA_E_REJECTED: return "Update refused - this version was rolled back on this device";

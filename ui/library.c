@@ -3,6 +3,7 @@
 #include "indic.h"
 #include "rowpool.h"
 #include "screens.h"
+#include "icons.h"
 #include "theme.h"
 #include "theme_kit.h"
 #include "folderbrowser.h"
@@ -36,6 +37,8 @@ static uint32_t  g_lhint_tick = 0;
 static lv_timer_t *g_lhint_timer;
 static char      g_lhint_ch = 0;
 static int g_view = VIEW_MENU;
+static lv_obj_t *g_search_btn;   /* Search lives here (moved from Home): top right, on the Library menu only */
+static void search_btn_cb(lv_event_t *e){ if(lv_event_get_code(e) == LV_EVENT_CLICKED) screen_show(SCR_SEARCH); }
 static int g_drill_kind = 0;  /* 1 album, 2 artist, 3 genre */
 /* Artist / Genre drills open on their ALBUMS (parity L23): level 1 = the album list (an "All Songs" row first), level 2 =
  * one album's songs by that artist / in that genre, level 0 = the flat all-songs drill (the old view; also a deep link). */
@@ -756,6 +759,7 @@ static void library_reload_read(void){
     const char *ttl = (g_view==VIEW_GROUP) ? ((g_drill_kind!=1 && g_scope_lvl==2) ? g_scope_album : g_drill) : VIEW_TITLE[g_view];
     if(g_view==VIEW_GROUP && g_drill_kind==2 && g_scope_lvl!=2 && !g_drill[0]) ttl = "Unknown artist";
     theme_title_text(g_title, (g_view==VIEW_GROUP) ? ttl : tr(ttl));
+    if(g_search_btn){ if(g_view==VIEW_MENU) lv_obj_remove_flag(g_search_btn, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(g_search_btn, LV_OBJ_FLAG_HIDDEN); }
     az_show(0);
 
     /* one-time discoverability hints for the invisible long-press actions */
@@ -1187,6 +1191,19 @@ void library_create(lv_obj_t *root){
     lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
 
     g_title = ui_header_cb(root, "Library", back_cb);   /* shared header; back_cb pops the internal view stack */
+    g_search_btn = lv_button_create(root);              /* mirrors the header's Back (72,24 44x40) */
+    lv_obj_remove_style_all(g_search_btn);
+    lv_obj_set_pos(g_search_btn, 244, 24); lv_obj_set_size(g_search_btn, 44, 40);
+    lv_obj_set_ext_click_area(g_search_btn, 10);
+    lv_obj_set_style_radius(g_search_btn, 20, 0);
+    lv_obj_set_style_bg_color(g_search_btn, TC(LIST_PRESSED), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(g_search_btn, LV_OPA_70, LV_STATE_PRESSED);
+    ui_on(g_search_btn, search_btn_cb, LV_EVENT_CLICKED, NULL, "library.search", UI_CORE);
+    {   lv_obj_t *ic = lv_label_create(g_search_btn);
+        lv_label_set_text(ic, ICON_SEARCH);
+        lv_obj_set_style_text_font(ic, &font_lucide_20, 0);
+        lv_obj_set_style_text_color(ic, TC(TEXT_SECONDARY), 0);
+        lv_obj_center(ic); }
 
     g_list = lv_obj_create(root);
     lv_obj_remove_style_all(g_list);

@@ -183,7 +183,7 @@ void controls_startup_mirror(void){
 /* Screen Rotation: the picture and touch turn at once, but nothing is stored until the user taps Keep. A prompt drawn in
  * the NEW orientation counts down; on timeout or Revert the old rotation comes back. The player's
  * stored value (0646) is only written on Keep, so a crash or reboot while the prompt is up also lands on the old one. */
-static void ctl_prompt_show(void);
+static void ctl_prompt_show(void) __attribute__((unused));   /* redesign: rotation applies at once (ui_set_screen_rot) */
 static void ctl_prompt_hide(void);
 static uint32_t ctl_now(void);
 static ctl_rb_t g_rb;
@@ -221,9 +221,12 @@ int ui_set_screen_rot(int v){
     if(!ctl_supported()){ fprintf(stderr, "screen rotation: unverified firmware (MAIN_OS_VER=%d)\n", fw_os_ver()); return -1; }
     if(v < 0 || v >= CTL_ROT_N) return -1;
     if(v == ctl_rot_get()) return 0;
-    ctl_rb_begin(&g_rb, ctl_rot_get(), v, ctl_now());
+    /* Redesign: no Keep/Revert prompt - the picture turns and the player stores it at once (the player is easy to
+     * turn round and pick again). A refused send leaves the old rotation. */
+    int prev = ctl_rot_get();
     fbpan_set_rotation(v);
-    ctl_prompt_show();
+    if(ctl_apply_rot_via(ipc_send_cmd, v) != 0){ fbpan_set_rotation(prev); return -1; }
+    cfg_set_int(CTL_CFG_ROT, v);
     return 0;
 }
 int ui_set_volume_key(int key, int act){

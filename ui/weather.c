@@ -210,7 +210,7 @@ static void weather_start(int net)
      * an offline fetch. While held nothing starts and nothing is consumed: an asked refresh stays in
      * g_wwant, and an interval/retry start stays due because g_last and g_wback are untouched, so the
      * ordinary poll serves either after the last release, on its own schedule. */
-    if (g_whold > 0 || !cfg_get_int("weather_on", 1)) return;
+    if (g_whold > 0 || !WEATHER_FEATURE_ON()) return;
     int go = 0;
     pthread_mutex_lock(&g_wx_mu);
     if (!g_inflight && !g_wready) { g_inflight = 1; go = 1; }   /* claim slot */
@@ -283,7 +283,7 @@ void weather_poll(lv_timer_t *t)
     (void)t;
     static int known = -1;            /* last known connectivity */
     int net = wifi_connectivity();
-    int on = cfg_get_int("weather_on", 1);
+    int on = WEATHER_FEATURE_ON();
     int reconnect = net > 0 && known == 0;
     if (net >= 0) known = net;
     wx_snap_set_on(on);
@@ -457,7 +457,7 @@ static void auto_loc_cb(lv_event_t *e)
 static void refresh_cb(lv_event_t *e)
 {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
-    if (!cfg_get_int("weather_on", 1)) { ui_toast("Weather is off in Settings"); return; }
+    if (!WEATHER_FEATURE_ON()) { ui_toast("Weather is off in Settings"); return; }
     if (wifi_connectivity() == 0) { ui_toast("No Wi-Fi"); return; }
     if (g_wasked) return;       /* already updating */
     g_wasked = 1;

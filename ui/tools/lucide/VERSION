@@ -1,0 +1,2 @@
+lucide-static 1.82.0 (npm), font/lucide.ttf + font/codepoints.json
+lucide.ttf: GSUB (name ligatures) removed with fontTools - lv_font_conv cannot read it

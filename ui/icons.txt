@@ -1,0 +1,87 @@
+# Lucide icons compiled into the UI (one name per line, as on lucide.dev).
+# After editing: python3 tools/gen_lucide_icons.py   -> font_lucide_<px>.c + icons.h
+# Use in code: lv_label_set_text(l, ICON_PLAY); lv_obj_set_style_text_font(l, &font_lucide_24, 0);
+
+# playback
+play
+pause
+skip-forward
+skip-back
+shuffle
+dices
+repeat
+repeat-1
+heart
+star
+timer
+list-music
+list-plus
+list-ordered
+mic-vocal
+audio-lines
+sliders-horizontal
+
+# library
+library
+folder
+music
+disc-3
+album
+headphones
+radio
+podcast
+book-open
+user
+list
+layout-grid
+
+# navigation + actions
+house
+chevron-left
+chevron-right
+chevron-up
+chevron-down
+arrow-left
+x
+check
+plus
+minus
+ellipsis
+search
+settings
+pencil
+rotate-cw
+info
+trash-2
+refresh-cw
+download
+power
+lock
+palette
+
+# status
+bluetooth
+wifi
+wifi-off
+airplay
+cast
+battery
+battery-low
+battery-medium
+battery-full
+battery-charging
+volume
+volume-1
+volume-2
+volume-x
+sun
+sun-dim
+moon
+clock
+
+# weather
+cloud
+cloud-rain
+cloud-sun
+snowflake
+zap

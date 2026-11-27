@@ -62,7 +62,13 @@ typedef struct {
 } cu_t;
 static cu_t g_cu;                /* the lock screen's */
 static cu_t g_cp;                /* the settings Preview's (slice 17d): the same builder on another parent, with the draft as the model */
-static int g_cfg_style = -1;     /* the saver_style last laid out, so a tick re-lays-out only when it changes */
+static int g_cfg_style = -1;
+/* "Vinyl mode" (redesign): a tap on the Now Playing cover opens this saver as Vinyl whatever saver_style is set to,
+ * until the saver is left (a touch, Back, the screen going off). */
+static int g_np_vinyl;
+static int saver_cfg_style(void){ return g_np_vinyl ? 4 : cfg_get_int("saver_style", 0); }
+int saver_np_vinyl(void){ return g_np_vinyl; }
+void saver_open_vinyl(void){ g_np_vinyl = 1; screen_show(SCR_SAVER); }     /* the saver_style last laid out, so a tick re-lays-out only when it changes */
 static int g_cu_msg;             /* a fallback happened: one message is due on the next wake */
 static int cu_on(void){ return g_cu.box != NULL; }
 int ui_screen_backlight_on(void);
@@ -367,7 +373,7 @@ void sharp_cover_set_identity(const char *path, const art_picture_id *picture, i
  * Unknown sources hide retained pixels; a verified different identity detaches before freeing. */
 static int sharp_retained(void)
 {
-    return !strcmp(theme_kit()->id, "bauhaus") || cfg_get_int("saver_style", 0) == 4 || ui_np_fsart_active();
+    return !strcmp(theme_kit()->id, "bauhaus") || saver_cfg_style() == 4 || ui_np_fsart_active();
 }
 
 /* Install without requiring a vinyl widget. The descriptor belongs to the provider. */
@@ -533,7 +539,7 @@ void saver_vinyl_spin(int want)
         lv_anim_set_var(&a, g_vinyl);
         lv_anim_set_exec_cb(&a, vspin_cb);
         lv_anim_set_values(&a, cur, cur + 3600);
-        lv_anim_set_time(&a, 27000);                /* ~27s/rev - slow, calm screensaver spin */
+        lv_anim_set_time(&a, 26000);                /* 26 s/rev (redesign; stock-calm was 27 s) */
         lv_anim_set_path_cb(&a, lv_anim_path_linear);   /* constant angular speed */
         lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
         lv_anim_start(&a);
@@ -547,7 +553,7 @@ static void song_visibility(void){
     if(cu_on()) return;   /* Custom keeps its own container: the built-in song labels stay hidden */
     int hifi = hifi_saver();
     int show = default_saver() || something_saver() || hifi || term_saver() || bauh_saver() || blue_saver() || stone_saver() || zine_saver()
-               ? g_playing && g_have_track : cfg_get_int("saver_style", 0) == 0;
+               ? g_playing && g_have_track : saver_cfg_style() == 0;
     /* Vinyl is the cover alone (owner 2026-10-07: no song label on the spinning saver); with no cover to spin the
      * label stays, so the saver never goes blank */
     if (g_style == 4 && g_vinyl && !lv_obj_has_flag(g_vinyl, LV_OBJ_FLAG_HIDDEN)) show = 0;
@@ -877,7 +883,7 @@ void saver_create(lv_obj_t *root)
     lv_label_set_text(g_clock, "--:--");
     lv_obj_add_event_cb(g_clock, saver_clock_style_cb, LV_EVENT_STYLE_CHANGED, NULL);   /* refit after the theme's face lands */
 
-    g_style = saver_resolve_style(cfg_get_int("saver_style", 0));   /* not on screen yet: Custom builds nothing here */
+    g_style = saver_resolve_style(saver_cfg_style());   /* not on screen yet: Custom builds nothing here */
     relayout(g_style);
     g_analog_timer=lv_timer_create(saver_anim_cb, 1000, NULL); lv_timer_pause(g_analog_timer);   /* analog seconds hand */
 }
@@ -911,7 +917,7 @@ static void vinyl_random_pose(void)
  * than waiting for the next clock tick (which is where style changes were applied). */
 void saver_show_sync(void)
 {
-    int s = saver_resolve_style(cfg_get_int("saver_style", 0));   /* Custom builds its container here (or falls back) */
+    int s = saver_resolve_style(saver_cfg_style());   /* Custom builds its container here (or falls back) */
     g_style = s; relayout(s);   /* style first: relayout's vinyl/label visibility reads g_style */
     if(g_style == 4){
         if(ui_screen_backlight_on()) vinyl_random_pose();
@@ -938,6 +944,7 @@ void saver_wake(void)
  * Custom is deleted, not hidden, and the built-in layout of the fallback style is restored for the next entry. */
 void saver_leave(void)
 {
+    g_np_vinyl = 0;   /* the next entry (idle) is the configured style again */
     if(cu_on()){
         cu_stop(&g_cu);
         g_style = SAVER_STYLE_FALLBACK;
@@ -1041,7 +1048,7 @@ void saver_set_clock(const char *t, const char *date)
 {
     /* re-apply layout if the style setting changed */
     int s = g_style;
-    if (cfg_get_int("saver_style", 0) != g_cfg_style) { s = g_style = saver_resolve_style(cfg_get_int("saver_style", 0)); relayout(s); }
+    if (saver_cfg_style() != g_cfg_style) { s = g_style = saver_resolve_style(saver_cfg_style()); relayout(s); }
     if (cu_on()) { custom_ov_feed_tick(); return; }   /* Custom: its own container, no built-in label, theme hook or fit runs */
 
     /* The layout below reads what it last set (a theme's song widths, the date's place), so it ran on every 10 s tick to

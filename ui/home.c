@@ -5,6 +5,8 @@
 #include "i18n.h"
 #include "theme.h"
 #include "theme_kit.h"
+#include "icons.h"
+#include "folderbrowser.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -37,6 +39,16 @@ static lv_obj_t *g_np_thumb_glyph;
 static lv_obj_t *g_np_title;
 static lv_obj_t *g_np_artist;
 static lv_obj_t *g_np_state;
+/* the redesigned Default Home (home_create_v2): status icons, clock, the playing track as the centre, Library + Settings */
+static int g_v2;
+static lv_obj_t *g_st_wifi, *g_st_bt, *g_st_chg, *g_st_batt, *g_st_batt_body, *g_st_batt_cap, *g_st_batt_lbl;
+static lv_obj_t *g_np_arc;   /* playback progress around the cover */
+static void home_pp_glyph(lv_obj_t *label, int playing){
+    if(!label) return;
+    if(!g_v2){ ui_pp_glyph(label, playing); return; }
+    const char *t = playing ? ICON_PAUSE : ICON_PLAY;
+    if(strcmp(lv_label_get_text(label), t)) lv_label_set_text(label, t);
+}
 /* "something" theme (THEME_TRAIT_MATRIX_CLOCK): a block-matrix clock drawn into one canvas. Two can exist: Home's
  * (handle 0) and the screensaver's (handle 1); each has its own canvas, buffer and AM/PM label. */
 typedef struct { lv_obj_t *canvas, *ampm, *colon[2]; uint8_t *buf; int y; int drawn; char time[16]; } mclock_t;   /* time: drawn text */
@@ -204,12 +216,20 @@ static void weather_event_cb(lv_event_t *e)
     if (t && t[0]) weather_app_open();
 }
 
+/* Library = the SD card's folders, straight away (redesign) */
+static void lib_event_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    if (ui_press_travel() > HOME_TAP_SLOP) return;
+    folderbrowser_open();
+}
+
 static void pp_event_cb(lv_event_t *e)
 {
     if (lv_event_get_code(e) == LV_EVENT_CLICKED){
         if(ui_press_travel() > HOME_TAP_SLOP) return;   /* a swipe across the key must not pause the music */
         if(ui_transport_command("0201000C0000") < 0) return;
-        if (g_np_state) ui_pp_glyph(g_np_state, ui_pp_icon_playing(ui_transport_playing()));
+        if (g_np_state) home_pp_glyph(g_np_state, ui_pp_icon_playing(ui_transport_playing()));
     }
 }
 
@@ -298,6 +318,20 @@ void home_set_weather(const char *text)
 /* Update the top status row. batt 0-100, charging/wifi/bt are booleans. */
 void home_set_status(int batt, int charging, int wifi, int bt)
 {
+    if (g_v2) {
+        if (wifi) lv_obj_remove_flag(g_st_wifi, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(g_st_wifi, LV_OBJ_FLAG_HIDDEN);
+        if (bt)   lv_obj_remove_flag(g_st_bt, LV_OBJ_FLAG_HIDDEN);   else lv_obj_add_flag(g_st_bt, LV_OBJ_FLAG_HIDDEN);
+        if (charging && batt >= 0) lv_obj_remove_flag(g_st_chg, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(g_st_chg, LV_OBJ_FLAG_HIDDEN);
+        if (batt < 0) { lv_obj_add_flag(g_st_batt, LV_OBJ_FLAG_HIDDEN); return; }
+        lv_obj_remove_flag(g_st_batt, LV_OBJ_FLAG_HIDDEN);
+        char b[8]; lv_snprintf(b, sizeof b, "%d", batt);
+        ui_label_set_changed(g_st_batt_lbl, b);
+        lv_color_t c = (batt <= 15 && !charging) ? TC(STATUS_DANGER) : TC(TEXT_SECONDARY);
+        lv_obj_set_style_border_color(g_st_batt_body, c, 0);
+        lv_obj_set_style_bg_color(g_st_batt_cap, c, 0);
+        lv_obj_set_style_text_color(g_st_batt_lbl, c, 0);
+        return;
+    }
     if (!g_status) return;
     char buf[80]; char *p = buf; *p = 0;
     if (wifi) { p += sprintf(p, LV_SYMBOL_WIFI "  "); }
@@ -385,9 +419,9 @@ static void now_playing_apply(const char *title, const char *artist, lv_color_t 
     g_accent = accent;
 
     int changed = ui_label_set_changed(g_np_title, title ? title : tr("Not Playing"));
-    changed |= ui_label_set_changed(g_np_artist, artist ? artist : tr("Library"));
-    if (g_np_state) ui_pp_glyph(g_np_state, ui_pp_icon_playing(playing));
-    np_fit(changed);
+    changed |= ui_label_set_changed(g_np_artist, artist ? artist : (g_v2 ? "" : tr("Library")));
+    if (g_np_state) home_pp_glyph(g_np_state, ui_pp_icon_playing(playing));
+    if (!g_v2) np_fit(changed);
 
     if (g_np_thumb) lv_obj_set_style_bg_color(g_np_thumb, accent, 0);
     if (g_status_arc) lv_obj_set_style_arc_color(g_status_arc, accent, LV_PART_INDICATOR);
@@ -400,6 +434,7 @@ void home_set_now_playing(const char *title, const char *artist, lv_color_t acce
 
 static void progress_apply(int progress, int have_track){
     g_progress = progress; g_has_track = have_track;
+    if (g_v2) { lv_arc_set_value(g_np_arc, have_track ? LV_CLAMP(0, progress, 1000) : 0); return; }
     theme_kit()->home_progress(g_np_capsule, progress, have_track, g_accent);
 }
 void home_set_progress(int progress, int have_track){ if (!g_rx_owned) progress_apply(progress, have_track); }
@@ -420,6 +455,7 @@ void home_set_accent(lv_color_t accent)
     g_accent = accent;
     if (g_np_thumb) lv_obj_set_style_bg_color(g_np_thumb, accent, 0);
     if (g_status_arc) lv_obj_set_style_arc_color(g_status_arc, accent, LV_PART_INDICATOR);
+    if (g_v2) { lv_obj_set_style_arc_color(g_np_arc, accent, LV_PART_INDICATOR); return; }
     if(g_np_capsule) theme_kit()->home_progress(g_np_capsule, g_progress, g_has_track, accent);
 }
 
@@ -443,6 +479,12 @@ void home_set_art_src(const void *src)
 {
     if (!g_np_art_img || !g_np_thumb_glyph) return;
     if (g_mclock || !g_art_on) return;                     /* the theme's pill shows no art (something: ring + waveform) */
+    if (g_v2) {                                            /* the big centre cover: the 148 px Now Playing cover, 1:1 */
+        const char *c = src ? ui_current_cover_src() : NULL;
+        if (c) { lv_image_set_src(g_np_art_img, c); lv_obj_center(g_np_art_img); lv_obj_clear_flag(g_np_art_img, LV_OBJ_FLAG_HIDDEN); }
+        else lv_obj_add_flag(g_np_art_img, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
 
     if (src) {
         /* src is a native-size 42px thumb (decoded by ui.c) - display 1:1, no
@@ -457,8 +499,171 @@ void home_set_art_src(const void *src)
     }
 }
 
+static lv_obj_t *v2_icon(lv_obj_t *parent, const char *glyph, const lv_font_t *f, lv_color_t c){
+    lv_obj_t *l = lv_label_create(parent);
+    lv_label_set_text(l, glyph);
+    lv_obj_set_style_text_font(l, f, 0);
+    lv_obj_set_style_text_color(l, c, 0);
+    lv_obj_clear_flag(l, LV_OBJ_FLAG_CLICKABLE);
+    return l;
+}
+static lv_obj_t *v2_button(lv_obj_t *parent, int x, int y, int w, int h){
+    lv_obj_t *b = lv_button_create(parent);
+    lv_obj_remove_style_all(b);
+    lv_obj_set_pos(b, x, y);
+    lv_obj_set_size(b, w, h);
+    lv_obj_set_style_radius(b, h / 2, 0);
+    lv_obj_set_style_bg_color(b, TC(SURFACE), 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_70, 0);
+    lv_obj_set_style_bg_color(b, TC(SURFACE_PRESSED), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, LV_STATE_PRESSED);
+    lv_obj_set_style_border_color(b, TC(OUTLINE_BRIGHT), 0);
+    lv_obj_set_style_border_opa(b, LV_OPA_10, 0);
+    lv_obj_set_style_border_width(b, 1, 0);
+    lv_obj_clear_flag(b, LV_OBJ_FLAG_SCROLLABLE);
+    return b;
+}
+
+/* The redesigned Home (Default theme): status icons (only what is on) / clock / the playing track as the centre
+ * (cover with the progress ring, play-pause on it, title, artist; tap = Now Playing) / Library pill + Settings. */
+static void home_create_v2(lv_obj_t *root)
+{
+    g_v2 = 1;
+    g_accent = TC(ACCENT_EMPHASIS);
+    lv_obj_set_style_bg_color(root, TC(CANVAS), 0);
+    lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
+
+    g_home_bg = lv_image_create(root);
+    lv_obj_remove_style_all(g_home_bg);
+    lv_obj_set_pos(g_home_bg, 0, 0); lv_obj_set_size(g_home_bg, 360, 360);
+    lv_obj_clear_flag(g_home_bg, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(g_home_bg, LV_OBJ_FLAG_HIDDEN);
+    g_home_scrim = lv_obj_create(root);
+    lv_obj_remove_style_all(g_home_scrim);
+    lv_obj_set_pos(g_home_scrim, 0, 0); lv_obj_set_size(g_home_scrim, 360, 360);
+    lv_obj_set_style_bg_color(g_home_scrim, TC(IMAGE_TINT), 0);
+    lv_obj_set_style_bg_opa(g_home_scrim, LV_OPA_60, 0);
+    lv_obj_clear_flag(g_home_scrim, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(g_home_scrim, LV_OBJ_FLAG_HIDDEN);
+
+    /* status row: Wi-Fi, Bluetooth (hidden while off), charging bolt, battery with the percent inside */
+    g_status = lv_obj_create(root);
+    lv_obj_remove_style_all(g_status);
+    lv_obj_set_pos(g_status, 0, 16); lv_obj_set_size(g_status, 360, 20);
+    lv_obj_set_flex_flow(g_status, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(g_status, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(g_status, 10, 0);
+    lv_obj_clear_flag(g_status, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    g_st_wifi = v2_icon(g_status, ICON_WIFI, &font_lucide_16, TC(TEXT_SECONDARY));
+    g_st_bt   = v2_icon(g_status, ICON_BLUETOOTH, &font_lucide_16, TC(TEXT_SECONDARY));
+    g_st_chg  = v2_icon(g_status, ICON_ZAP, &font_lucide_16, TC(TEXT_SECONDARY));
+    lv_obj_add_flag(g_st_wifi, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(g_st_bt, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(g_st_chg, LV_OBJ_FLAG_HIDDEN);
+    g_st_batt = lv_obj_create(g_status);
+    lv_obj_remove_style_all(g_st_batt);
+    lv_obj_set_size(g_st_batt, 31, 16);
+    lv_obj_clear_flag(g_st_batt, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    g_st_batt_body = lv_obj_create(g_st_batt);
+    lv_obj_remove_style_all(g_st_batt_body);
+    lv_obj_set_pos(g_st_batt_body, 0, 0); lv_obj_set_size(g_st_batt_body, 28, 16);
+    lv_obj_set_style_radius(g_st_batt_body, 4, 0);
+    lv_obj_set_style_border_width(g_st_batt_body, 2, 0);   /* Lucide's stroke at 16-20 px */
+    lv_obj_set_style_border_color(g_st_batt_body, TC(TEXT_SECONDARY), 0);
+    lv_obj_clear_flag(g_st_batt_body, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    g_st_batt_cap = lv_obj_create(g_st_batt);
+    lv_obj_remove_style_all(g_st_batt_cap);
+    lv_obj_set_pos(g_st_batt_cap, 29, 5); lv_obj_set_size(g_st_batt_cap, 2, 6);
+    lv_obj_set_style_radius(g_st_batt_cap, 1, 0);
+    lv_obj_set_style_bg_opa(g_st_batt_cap, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(g_st_batt_cap, TC(TEXT_SECONDARY), 0);
+    g_st_batt_lbl = v2_icon(g_st_batt_body, "", TF(UI_10), TC(TEXT_SECONDARY));
+    lv_obj_center(g_st_batt_lbl);
+    lv_obj_add_flag(g_st_batt, LV_OBJ_FLAG_HIDDEN);
+
+    g_clock = make_label(root, "--:--", TF(UI_28), TC(TEXT_PRIMARY));
+    lv_obj_set_pos(g_clock, 0, 38);
+    lv_obj_set_width(g_clock, 360);
+    g_clock_sub = make_label(root, "", TF(UI_14), TC(TEXT_MUTED));   /* the date: kept as the data sink, never shown */
+    lv_obj_add_flag(g_clock_sub, LV_OBJ_FLAG_HIDDEN);
+
+    /* the centre: the playing track */
+    g_np_capsule = lv_button_create(root);
+    lv_obj_remove_style_all(g_np_capsule);
+    lv_obj_set_pos(g_np_capsule, 50, 76); lv_obj_set_size(g_np_capsule, 260, 200);
+    lv_obj_clear_flag(g_np_capsule, LV_OBJ_FLAG_SCROLLABLE);
+    ui_on(g_np_capsule, nav_event_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)SCR_NOWPLAYING, "home.nowplaying", UI_CORE);
+
+    g_np_thumb = lv_obj_create(g_np_capsule);
+    lv_obj_remove_style_all(g_np_thumb);
+    lv_obj_set_pos(g_np_thumb, 56, 0); lv_obj_set_size(g_np_thumb, 148, 148);
+    lv_obj_set_style_radius(g_np_thumb, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_clip_corner(g_np_thumb, true, 0);
+    lv_obj_set_style_bg_color(g_np_thumb, TC(SURFACE), 0);
+    lv_obj_set_style_bg_opa(g_np_thumb, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(g_np_thumb, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    g_np_art_img = lv_image_create(g_np_thumb);
+    lv_obj_set_size(g_np_art_img, 148, 148);
+    lv_obj_center(g_np_art_img);
+    lv_obj_add_flag(g_np_art_img, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(g_np_art_img, LV_OBJ_FLAG_CLICKABLE);
+    g_np_thumb_glyph = NULL;
+
+    g_np_arc = lv_arc_create(g_np_capsule);
+    lv_obj_set_pos(g_np_arc, 56, 0); lv_obj_set_size(g_np_arc, 148, 148);
+    lv_arc_set_rotation(g_np_arc, 270);
+    lv_arc_set_bg_angles(g_np_arc, 0, 360);
+    lv_arc_set_range(g_np_arc, 0, 1000);
+    lv_arc_set_value(g_np_arc, 0);
+    lv_obj_remove_style(g_np_arc, NULL, LV_PART_KNOB);
+    lv_obj_clear_flag(g_np_arc, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_arc_width(g_np_arc, 4, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(g_np_arc, 4, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(g_np_arc, TC(CANVAS), LV_PART_MAIN);
+    lv_obj_set_style_arc_opa(g_np_arc, LV_OPA_50, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(g_np_arc, g_accent, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_rounded(g_np_arc, true, LV_PART_INDICATOR);
+
+    lv_obj_t *pp_btn = lv_button_create(g_np_capsule);
+    lv_obj_remove_style_all(pp_btn);
+    lv_obj_set_pos(pp_btn, 102, 46); lv_obj_set_size(pp_btn, 56, 56);
+    lv_obj_set_style_radius(pp_btn, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(pp_btn, TC(SCRIM), 0);
+    lv_obj_set_style_bg_opa(pp_btn, LV_OPA_40, 0);
+    lv_obj_set_style_bg_opa(pp_btn, LV_OPA_70, LV_STATE_PRESSED);
+    ui_on(pp_btn, pp_event_cb, LV_EVENT_CLICKED, NULL, "home.pp", UI_CORE);
+    g_np_state = v2_icon(pp_btn, ICON_PLAY, &font_lucide_24, TC(TEXT_PRIMARY));
+    lv_obj_center(g_np_state);
+
+    g_np_title = indic_label_create(g_np_capsule);
+    lv_label_set_text(g_np_title, tr("Not Playing"));
+    lv_label_set_long_mode(g_np_title, LV_LABEL_LONG_DOT);
+    lv_obj_set_pos(g_np_title, 0, 156); lv_obj_set_size(g_np_title, 260, 22);
+    lv_obj_set_style_text_align(g_np_title, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(g_np_title, TF(USER_16), 0);
+    lv_obj_set_style_text_color(g_np_title, TC(TEXT_PRIMARY), 0);
+    g_np_artist = indic_label_create(g_np_capsule);
+    lv_label_set_text(g_np_artist, "");
+    lv_label_set_long_mode(g_np_artist, LV_LABEL_LONG_DOT);
+    lv_obj_set_pos(g_np_artist, 20, 178); lv_obj_set_size(g_np_artist, 220, 20);
+    lv_obj_set_style_text_align(g_np_artist, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(g_np_artist, TF(USER_14), 0);
+    lv_obj_set_style_text_color(g_np_artist, TC(TEXT_SECONDARY), 0);
+
+    /* bottom: Library pill + Settings */
+    lv_obj_t *lib = v2_button(root, 88, 284, 134, 44);
+    ui_on(lib, lib_event_cb, LV_EVENT_CLICKED, NULL, "home.library", UI_CORE);
+    lv_obj_t *li = v2_icon(lib, ICON_LIBRARY, &font_lucide_20, TC(TEXT_PRIMARY));
+    lv_obj_align(li, LV_ALIGN_LEFT_MID, 20, 0);
+    lv_obj_t *lt = make_label(lib, tr("Library"), TF(UI_16), TC(TEXT_PRIMARY));
+    lv_obj_align(lt, LV_ALIGN_LEFT_MID, 50, 0);
+    lv_obj_t *set = v2_button(root, 230, 284, 44, 44);
+    ui_on(set, nav_event_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)SCR_SETTINGS, "home.settings", UI_CORE);
+    lv_obj_center(v2_icon(set, ICON_SETTINGS, &font_lucide_20, TC(TEXT_PRIMARY)));
+}
+
 void home_create(lv_obj_t *root)
 {
+    if (!strcmp(theme_kit()->id, "default") && !theme_trait(THEME_TRAIT_MATRIX_CLOCK)) { home_create_v2(root); return; }
     if (theme_screen_plain(THEME_PLAIN_HOME)) theme_screen_solid(root);   /* the theme draws Home plain */
     g_accent = TC(ACCENT_EMPHASIS);
 

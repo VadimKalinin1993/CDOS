@@ -9,6 +9,8 @@
 #include "i18n.h"
 #include "playback.h"   /* playback_display_state: the Cast view */
 #include "cast_ui.h"     /* BEAM_GLYPH, cast_ui_open, the session as the UI shows it */
+#include "controls.h"    /* CTL_CFG_ROT: the Screen Rotation setting */
+#include "icons.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -37,7 +39,7 @@ LV_FONT_DECLARE(font_icons_20)          /* FontAwesome 20px - EQ + Search glyphs
 #define QS_MAX_TILES 6                  /* grid holds two rows of three */
 
 /* ---- tile palette ---------------------------------------------------------------------------- */
-enum { QT_WIFI, QT_BT, QT_EQ, QT_SEARCH, QT_RESCAN, QT_MODE, QT_SCREENOFF,
+enum { QT_WIFI, QT_BT, QT_EQ, QT_SEARCH, QT_RESCAN, QT_ROTATE, QT_MODE, QT_SCREENOFF,
        QT_SHUFFLE, QT_FAV, QT_LYRICS, QT_TIMER, QT_GAPLESS, QT_GAIN, QT_DRE, QT_RG, QT_OUTDOOR, QT_THEME,
        QT_BEAM, QT_COUNT };
 
@@ -50,13 +52,17 @@ typedef struct {
     int               has_long; /* has a long-press action (opens a screen) */
 } qtile_t;
 
+#define QT_FONT_LUCIDE THEME_FONT_COUNT   /* a tile whose glyph is a Lucide icon (font_lucide_20) */
+static const lv_font_t *qtile_font(theme_font_role_t f){ return f == QT_FONT_LUCIDE ? &font_lucide_20 : theme_font(f); }
 static const qtile_t QTILES[QT_COUNT] = {
     [QT_WIFI]      = { "qs_t_wifi",      "Wi-Fi",      LV_SYMBOL_WIFI,      THEME_FONT_UI_20, 1, 1 },
     [QT_BT]        = { "qs_t_bt",        "Bluetooth",  LV_SYMBOL_BLUETOOTH, THEME_FONT_UI_20, 1, 1 },
     [QT_EQ]        = { "qs_t_eq",        "EQ",         WI_EQ,               THEME_FONT_ICON_20,         1, 1 },
-    [QT_SEARCH]    = { "qs_t_search",    "Search",     WI_SEARCH,           THEME_FONT_ICON_20,         1, 0 },
+    /* redesign defaults: Wi-Fi, Bluetooth, EQ, Rescan, Rotate (+ the Edit tile); Search lives in Library, Source opt-in */
+    [QT_SEARCH]    = { "qs_t_search",    "Search",     WI_SEARCH,           THEME_FONT_ICON_20,         0, 0 },
     [QT_RESCAN]    = { "qs_t_rescan",    "Rescan",     LV_SYMBOL_REFRESH,   THEME_FONT_UI_20, 1, 0 },
-    [QT_MODE]      = { "qs_t_mode",      "Source",     LV_SYMBOL_AUDIO,     THEME_FONT_UI_20, 1, 0 },
+    [QT_ROTATE]    = { "qs_t_rotate",    "Rotate",     ICON_ROTATE_CW,      QT_FONT_LUCIDE,   1, 0 },   /* opens Screen Rotation */
+    [QT_MODE]      = { "qs_t_mode",      "Source",     LV_SYMBOL_AUDIO,     THEME_FONT_UI_20, 0, 0 },
     [QT_SCREENOFF] = { "qs_t_screenoff", "Screen off", LV_SYMBOL_EYE_CLOSE, THEME_FONT_UI_20, 0, 0 },
     /* opt-in audio/playback tiles (default off; enable in Settings > Controls > Quick Settings) */
     [QT_SHUFFLE]   = { "qs_t_shuffle",   "Shuffle",    LV_SYMBOL_SHUFFLE,   THEME_FONT_UI_20, 0, 1 },
@@ -89,13 +95,16 @@ static lv_obj_t *dim_tile, *dim_cap;         /* the Favourite tile (circle, capt
 
 /* the drawer shows at most this many tiles - one fewer with the transport row, so the second row never
  * pushes its outer captions off the round bezel. */
-static int qs_cap(void){ return cfg_get_int("qs_transport", 0) ? QS_MAX_TILES - 1 : QS_MAX_TILES; }
+/* redesign: the last circle is always Edit, so the user's tiles get one fewer */
+static int qs_cap(void){ return (cfg_get_int("qs_transport", 0) ? QS_MAX_TILES - 1 : QS_MAX_TILES) - 1; }
 
+/* redesign: tiles for removed settings (Outdoor, Theme) are never shown nor offered */
+static int qtile_retired(int id){ return id == QT_OUTDOOR || id == QT_THEME; }
 /* which tiles are enabled, in palette order, capped. Returns the count. */
 static int qs_enabled(int ids[QT_COUNT], int cap){
     int n = 0;
     for(int i=0; i<QT_COUNT && n<cap; i++)
-        if(cfg_get_int(QTILES[i].cfg, QTILES[i].def_on)) ids[n++] = i;
+        if(!qtile_retired(i) && cfg_get_int(QTILES[i].cfg, QTILES[i].def_on)) ids[n++] = i;
     return n;
 }
 
@@ -175,6 +184,7 @@ static void tile_short_cb(lv_event_t *e){
         case QT_EQ:        eq_toggle(); break;
         case QT_SEARCH:    screen_show(SCR_SEARCH); break;
         case QT_RESCAN:    ui_rescan_library(); break;
+        case QT_ROTATE:    settings_open_key(CTL_CFG_ROT); break;   /* the Screen Rotation chooser */
         case QT_MODE:      modes_open(); break;
         case QT_BEAM:      cast_ui_open(); break;   /* the picker explains a missing Wi-Fi itself; nothing is sent to the player */
         case QT_SCREENOFF: ui_request_sleep(); screen_show(SCR_SAVER); break;
@@ -262,7 +272,7 @@ static void build_tile(lv_obj_t *root, int id, int x, int y){
     lv_obj_t *g = lv_label_create(c);
     lv_obj_clear_flag(g, LV_OBJ_FLAG_CLICKABLE);
     lv_label_set_text(g, t->glyph);
-    lv_obj_set_style_text_font(g, theme_font(t->font), 0);
+    lv_obj_set_style_text_font(g, qtile_font(t->font), 0);
     lv_obj_set_style_text_color(g, qtile_is_on(id) ? TC(ON_ACCENT) : TC(TEXT_PRIMARY), 0);
     lv_obj_center(g);
 
@@ -283,6 +293,33 @@ static void build_tile(lv_obj_t *root, int id, int x, int y){
         tile_recolor(id, qtile_is_on(id));
     }
     if(theme_kit()->qs_tile) tile_recolor(id, qtile_is_on(id));
+}
+
+/* the Edit circle (redesign): always the drawer's last tile, opens the tile picker */
+static void edit_tile_cb(lv_event_t *e){ if(lv_event_get_code(e) == LV_EVENT_CLICKED) screen_show(SCR_QSCONFIG); }
+static void build_edit_tile(lv_obj_t *root, int x, int y){
+    lv_obj_t *c = lv_button_create(root);
+    lv_obj_remove_style_all(c);
+    lv_obj_set_size(c, 58, 58);
+    lv_obj_align(c, LV_ALIGN_TOP_MID, x, y);
+    lv_obj_set_style_radius(c, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(c, TC(CONTROL_OFF), 0);
+    lv_obj_set_style_bg_opa(c, LV_OPA_COVER, 0);
+    lv_obj_set_style_opa(c, LV_OPA_80, LV_STATE_PRESSED);
+    lv_obj_set_ext_click_area(c, 4);
+    ui_on(c, edit_tile_cb, LV_EVENT_CLICKED, NULL, "qs.edit", UI_CORE);
+    lv_obj_t *g = lv_label_create(c);
+    lv_obj_clear_flag(g, LV_OBJ_FLAG_CLICKABLE);
+    lv_label_set_text(g, ICON_PENCIL);
+    lv_obj_set_style_text_font(g, &font_lucide_20, 0);
+    lv_obj_set_style_text_color(g, TC(TEXT_PRIMARY), 0);
+    lv_obj_center(g);
+    lv_obj_t *lb = lv_label_create(root);
+    lv_obj_clear_flag(lb, LV_OBJ_FLAG_CLICKABLE);
+    lv_label_set_text(lb, tr("Edit"));
+    lv_obj_set_style_text_font(lb, TF(UI_14), 0);
+    lv_obj_set_style_text_color(lb, TC(TEXT_MUTED), 0);
+    lv_obj_align(lb, LV_ALIGN_TOP_MID, x, y + 62);
 }
 
 /* ---- Beam tile caption + live state (Cast 21) -------------------------------------------------------
@@ -377,7 +414,7 @@ static void build_brightness(lv_obj_t *root, int y){
     lv_slider_set_range(g_bright, 4, 40);
     lv_slider_set_value(g_bright, ui_effective_brightness(), LV_ANIM_OFF);
     if(theme_outdoor()) lv_obj_add_state(g_bright, LV_STATE_DISABLED);   /* Outdoor holds full brightness */
-    lv_obj_set_style_bg_color(g_bright, TC(CONTROL_TRACK), LV_PART_MAIN);
+    theme_slider_track(g_bright);
     lv_obj_set_style_radius(g_bright, 17, LV_PART_MAIN);
     lv_obj_set_style_bg_color(g_bright, TC(CONTROL_FILL), LV_PART_INDICATOR);
     lv_obj_set_style_radius(g_bright, 17, LV_PART_INDICATOR);
@@ -433,7 +470,8 @@ void quicksettings_build(void){
 
     int have_tr = cfg_get_int("qs_transport", 0) ? 1 : 0;
     int ids[QT_COUNT]; int nt = qs_enabled(ids, qs_cap());
-    int rows = nt > 3 ? 2 : (nt > 0 ? 1 : 0);
+    int ncirc = nt + 1;                                /* + the Edit circle, always last */
+    int rows = ncirc > 3 ? 2 : 1;
 
     const int H_BR = 34, H_TR = 56, H_ROW = 80, GAP = 14;
     int nblocks = 1 + have_tr + rows;                 /* brightness is always present */
@@ -446,10 +484,11 @@ void quicksettings_build(void){
 
     int placed = 0;
     for(int r=0; r<rows; r++){
-        int k = (r == 0) ? (nt > 3 ? 3 : nt) : (nt - 3);   /* row 1 up to 3, row 2 the remainder */
+        int k = (r == 0) ? (ncirc > 3 ? 3 : ncirc) : (ncirc - 3);   /* row 1 up to 3, row 2 the remainder */
         for(int i=0; i<k; i++){
             int x = (int)((i - (k-1)/2.0) * 84);           /* centre the row, 84px column pitch */
-            build_tile(g_qs_root, ids[placed++], x, y);
+            if(placed < nt) build_tile(g_qs_root, ids[placed++], x, y);
+            else build_edit_tile(g_qs_root, x, y);
         }
         y += H_ROW + GAP;
     }
@@ -507,7 +546,7 @@ static lv_obj_t *g_qscfg_root, *g_qscfg_count;
 static void qscfg_back_cb(lv_event_t *e){ if(lv_event_get_code(e)==LV_EVENT_CLICKED) screen_back(); }
 static int qscfg_chosen(void){
     int cnt = 0;
-    for(int i=0;i<QT_COUNT;i++) if(cfg_get_int(QTILES[i].cfg, QTILES[i].def_on)) cnt++;
+    for(int i=0;i<QT_COUNT;i++) if(!qtile_retired(i) && cfg_get_int(QTILES[i].cfg, QTILES[i].def_on)) cnt++;
     return cnt;
 }
 static void qscfg_count_paint(void){
@@ -522,7 +561,7 @@ static void qscfg_sw_cb(lv_event_t *e){
     lv_obj_t *sw = lv_event_get_target(e);
     int on = lv_obj_has_state(sw, LV_STATE_CHECKED) ? 1 : 0;
     if(id < 0){
-        if(on && qscfg_chosen() > QS_MAX_TILES - 1){
+        if(on && qscfg_chosen() > QS_MAX_TILES - 2){   /* the transport row costs a circle (and Edit has one) */
             lv_obj_remove_state(sw, LV_STATE_CHECKED);
             ui_toast("Turn off a tile first");
             return;
@@ -553,18 +592,17 @@ static void qscfg_row_cb(lv_event_t *e){
 static void qscfg_row(lv_obj_t *list, const char *label, int id, int on){
     lv_obj_t *row = lv_button_create(list);
     lv_obj_remove_style_all(row);
-    lv_obj_set_size(row, 268, 50);
-    lv_obj_set_style_radius(row, 12, 0);
-    lv_obj_set_style_bg_color(row, TC(SURFACE), 0);
-    lv_obj_set_style_bg_opa(row, LV_OPA_70, 0);
-    lv_obj_set_style_bg_color(row, TC(SURFACE_PRESSED), LV_STATE_PRESSED);
+    lv_obj_set_size(row, 296, 56);                    /* redesign: plain row like Settings */
+    lv_obj_set_style_radius(row, 8, 0);
+    lv_obj_set_style_bg_color(row, TC(LIST_PRESSED), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(row, LV_OPA_70, LV_STATE_PRESSED);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
     ui_on(row, qscfg_row_cb, LV_EVENT_CLICKED, NULL, "quicksettings.qscfg_row", UI_CORE);
 
     lv_obj_t *lbl = lv_label_create(row);
     lv_label_set_text(lbl, tr(label));
     lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 18, 0);
-    lv_obj_set_style_text_font(lbl, TF(UI_16), 0);
+    lv_obj_set_style_text_font(lbl, TF(UI_18), 0);
     lv_obj_set_style_text_color(lbl, TC(TEXT_PRIMARY), 0);
 
     lv_obj_t *sw = lv_switch_create(row);
@@ -599,9 +637,9 @@ void qsconfig_refresh(void){
     lv_obj_t *list = lv_obj_create(g_qscfg_root);
     lv_obj_remove_style_all(list);
     lv_obj_set_pos(list, 30, 92);
-    lv_obj_set_size(list, 300, 228);
+    lv_obj_set_size(list, 300, 268);
     lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_pad_row(list, 8, 0);
+    lv_obj_set_style_pad_row(list, 4, 0);
     lv_obj_set_style_pad_bottom(list, 44, 0);
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -611,5 +649,5 @@ void qsconfig_refresh(void){
 
     qscfg_row(list, "Playback controls", -1, cfg_get_int("qs_transport", 0));
     for(int i=0;i<QT_COUNT;i++)
-        qscfg_row(list, QTILES[i].cap, i, cfg_get_int(QTILES[i].cfg, QTILES[i].def_on));
+        if(!qtile_retired(i)) qscfg_row(list, QTILES[i].cap, i, cfg_get_int(QTILES[i].cfg, QTILES[i].def_on));
 }

@@ -1077,6 +1077,28 @@ int mdb_subtrack_plan(const char *const *paths, int npaths, mdb_plan_t *plan){
     return 1;
 }
 
+/* Redesign: a folder is the album. The plain (non CUE/ISO) songs of the given files, in the given order (the folder list's),
+ * as an exact type-5 queue. 1 built, 0 none indexed, -1 retry (caller frees a built plan). */
+int mdb_paths_plan(const char *const *paths, int npaths, mdb_plan_t *plan){
+    if(!plan || !paths || npaths <= 0) return 0;
+    memset(plan, 0, sizeof *plan);
+    sqlite3 *d = db(); if(!d) return -1;
+    sqlite3_stmt *st;
+    if(sqlite3_prepare_v2(d, "SELECT ID FROM SONG WHERE PATH=?1 AND COALESCE(IS_CUE,0)=0 AND COALESCE(IS_ISO,0)=0 ORDER BY ID LIMIT 1;", -1, &st, NULL) != SQLITE_OK) return -1;
+    int *ids = malloc((size_t)npaths * sizeof *ids), n = 0;
+    if(!ids){ sqlite3_finalize(st); return -1; }
+    for(int i = 0; i < npaths; i++){
+        if(!paths[i]) continue;
+        sqlite3_reset(st); sqlite3_bind_text(st, 1, paths[i], -1, SQLITE_STATIC);
+        int rc = sqlite3_step(st);
+        if(rc == SQLITE_ROW) ids[n++] = sqlite3_column_int(st, 0);
+        else if(rc != SQLITE_DONE){ free(ids); sqlite3_finalize(st); return -1; }
+    }
+    sqlite3_finalize(st);
+    if(n <= 0){ free(ids); return 0; }
+    plan->list_type = 5; plan->ids = ids; plan->count = n;
+    return 1;
+}
 
 typedef struct { const char *p, *skip; int after; } mdb_artist_iter;
 static int mdb_artist_space(unsigned char c){ return c==' ' || c=='\t' || c=='\r' || c=='\n'; }

@@ -124,7 +124,6 @@ void ui_sd_quiesce_begin(void); int ui_sd_quiesce_drained(void); void ui_sd_quie
 
 static void apply_swipe(int v){ ui_apply_swipe_thresh(v); }   /* live; persisted on slider release */
 static void apply_anim(int v){ screen_set_anim(v); }
-static void apply_weather(int v){ weather_set_enabled(v); }
 static void apply_mode(int v){ if(ui_book_active()) return; ui_set_workmode(v); }   /* an active book stays in Single; cfg still updates for later music */
 static void apply_eq(int v){ ui_eq_select(v); }   /* central: also records eq_last so the drawer A/B stays in sync */
 /* audio cluster: v<0 = "System default" (unmanaged) -> ui_set_* no-ops, leaving the player's
@@ -271,6 +270,9 @@ static void apply_track_numbers(int v){ ui_set_track_display(v); library_refresh
  * queued lookup and redraws the current cover without an online picture */
 static void apply_online_art(int v){ if(!v) netart_cancel(); ui_art_redo(); }
 static void apply_open_datetime(int v){ (void)v; screen_show(SCR_DATETIME); }
+static void setlist_open_time(void);
+static void apply_open_time(int v){ (void)v; setlist_open_time(); }
+static void setlist_refresh_async(void *u);   /* Device -> Time: its own page */
 /* Time Zone: "Automatic" leaves the zone to the player (looked up online when Wi-Fi connects, with Automatic Time
  * on); any other entry copies that zone's rules to /usr/data/localtime (what /etc/localtime points at, for every
  * process), atomically, then re-launches the UI so its clock uses them. */
@@ -641,6 +643,22 @@ void ui_backlight_release(int fallback){   /* after the repaint: the latest leve
     ui_backlight(g_bl_held > 0 ? g_bl_held : fallback);
 }
 static void apply_brightness(int v){ if(v < 1) v = 1; ui_backlight(v); }
+/* Redesign: what used to be settings is fixed. Runs before theme_init (main.c), so the theme, variant and Now Playing
+ * style read below already see these. Writes only what differs. The player-owned values (Resume, Play Mode) go to the
+ * player with the audio restore on connect (main.c audio_restore_tick reads these keys). */
+void redesign_fixed_settings(void){
+    static const struct { const char *key; int v; } FIX[] = {
+        { "theme_preset", 0 }, { "theme_variant", 0 }, { "outdoor", 0 },   /* the standard theme, Dark only */
+        { "accent_mode", 0 },                                               /* the accent follows the cover */
+        { "anim", 1 }, { "np_style", 0 },
+        { "memory_play", 1 },                                               /* always resume the song where it stopped */
+        { "online_art", 0 }, { "artcache", 0 }, { "old_tags", OLD_TAGS_AUTO },
+        { "ota_allow", 1 },                                                 /* CDOS updates over Wi-Fi: always allowed (manual check) */
+    };
+    for(unsigned i = 0; i < sizeof FIX / sizeof FIX[0]; i++)
+        if(cfg_get_int(FIX[i].key, -12345) != FIX[i].v) cfg_set_int(FIX[i].key, FIX[i].v);
+    if(cfg_get_int("work_mode", 0) > 3) cfg_set_int("work_mode", 0);      /* Single is gone: back to Sequential */
+}
 void settings_apply_startup(int restore_brightness){
     scanner_set_old_tags(cfg_get_int("old_tags", OLD_TAGS_AUTO));
     if(restore_brightness) apply_brightness(ui_effective_brightness());
@@ -651,7 +669,8 @@ void settings_apply_startup(int restore_brightness){
       if(ac >= 0 && ac != cfg_get_int("artist_class", 0)) cfg_set_int("artist_class", ac);
       mdb_set_artist_mode(ac == 1); }                   /* unknown -> by artist, as the player's queue can't be matched */
     { int fj = mdb_sysconfig_folder_jump();             /* the player's Play Through Folders switch (it owns it) */
-      if(fj >= 0 && fj != cfg_get_int("folder_jump", 0)) cfg_set_int("folder_jump", fj); }
+      if(fj >= 0 && fj != cfg_get_int("folder_jump", 0)) cfg_set_int("folder_jump", fj);
+      if(fj == 1 && ui_set_folder_jump(0) == 0) cfg_set_int("folder_jump", 0); }   /* redesign: always off (an album ends) */
     power_startup_mirror();        /* the player's own Idle poweroff / Charging optimization values */
     controls_startup_mirror();     /* the player's Screen rotation and volume-key actions */
     cfg_set_int("sleep_idx", 0);   /* never auto-arm a sleep timer across reboots */
@@ -693,7 +712,7 @@ static const char *const OPT_FONTSIZE[] = { "Small", "Medium", "Large" };
 static const char *const OPT_ALBUMVIEW[] = { "List", "Cover Flow" };
 static const char *const OPT_SAVERSTYLE[] = { "Cover", "Analog", "Minimal", "Digital", "Vinyl", "Custom" };
 static const char *const OPT_OLDTAGS[] = { "Auto", "Western", "Cyrillic" };
-static const char *const OPT_BOOTDEF[] = { "diskOS", "Stock" };
+static const char *const OPT_BOOTDEF[] = { "CDOS", "Stock" };
 static const char *const OPT_ARTCACHE[] = { "Covers only","When Idle","Idle & Charging" };
 
 /* Public EQ preset name lookup (Quick Settings drawer toast, etc.); mirrors OPT_EQ indexing 0..20. */
@@ -712,9 +731,9 @@ static const setting_t TABLE[] = {
     /* Display order: a category page lists its rows in this order, and a heading appears wherever "section" changes
      * (NULL = no heading). The rows of one section are contiguous (tests/host/test_settings_reorg.py). */
     /* ---- Playback ---- */
-    { "Playback", "Playing music", "Play Mode",   ST_CYCLER, "work_mode", 0,0,0, OPT_MODE, 5, NULL, apply_mode, 0 },
-    { "Playback", "Playing music", "Resume Playback", ST_CYCLER, "memory_play", 0,0,0, OPT_MEMORY, 3, NULL, apply_memory, 0 },
-    { "Playback", "Playing music", "Play Through Folders", ST_TOGGLE, "folder_jump", 0,1,1, NULL, 0, NULL, apply_folder_jump, 0 },
+    /* redesign: Resume Playback (always Position) and Play Through Folders (always off) are fixed, not settings;
+     * Play Mode without Single (redesign_fixed_settings) */
+    { "Playback", NULL, "Play Mode",   ST_CYCLER, "work_mode", 0,0,0, OPT_MODE, 4, NULL, apply_mode, 0 },
     { "Playback", "Bedtime", "Sleep Timer", ST_CYCLER, "sleep_idx", 0,0,0, OPT_SLEEP, 6, NULL, apply_sleep, 0 },
     { "Playback", "Bedtime", "When Sleep Ends", ST_CYCLER, "sleep_action", 0,0,0, OPT_SLEEP_ACT, 2, NULL, NULL, POWER_SLEEP_PAUSE },
     /* ---- Audio ---- */
@@ -745,28 +764,13 @@ static const setting_t TABLE[] = {
     { "Display", "Screen", "Brightness",  ST_SLIDER, "brightness", 4,40,2, NULL,0, NULL, apply_brightness_row, 16 },
     { "Display", "Screen", "Font Size",   ST_CYCLER, "font_size", 0,0,0, OPT_FONTSIZE, 3, NULL, apply_font_size, 1 },
     { "Display", "Screen", "Screen Rotation", ST_CYCLER, CTL_CFG_ROT, 0,0,0, OPT_ROTATION, CTL_ROT_N, NULL, apply_screen_rot, 0 },
-    { "Display", "Screen", "Outdoor Mode", ST_TOGGLE, "outdoor",  0,1,1, NULL, 0, NULL, apply_outdoor, 0 },
-    { "Display", "Appearance", "Theme",       ST_CHOICE, "theme_preset", 0,0,0, theme_preset_names, THEME_PRESET_COUNT, NULL, apply_theme_preset, 0 },
-    { "Display", "Appearance", "Appearance",  ST_CYCLER, "theme_variant", 0,0,0, OPT_APPEARANCE, 2, NULL, apply_appearance, 0 },
-    { "Display", "Appearance", "Accent Colour", ST_ACTION, NULL, 0,0,0, NULL,0, LV_SYMBOL_RIGHT, apply_open_colorpick, 0 },
-    { "Display", "Appearance", "Animations",  ST_TOGGLE, "anim",      0,1,1, NULL, 0, NULL, apply_anim, 1 },
-    { "Display", "Music and Home", "Now Playing", ST_CYCLER, "np_style",   0,0,0, OPT_NPSTYLE, 2, NULL, apply_np_style, 0 },
-    { "Display", "Music and Home", "Weather on Home", ST_TOGGLE, "weather_on", 0,1,1, NULL, 0, NULL, apply_weather, 1 },
+    /* redesign: no Outdoor Mode (full brightness is the slider's top), no Appearance section (standard theme, Dark,
+     * accent from the cover, animations on) and no Now Playing style: fixed in redesign_fixed_settings */
     { "Display", "Screensaver", "Screensaver", ST_CYCLER, "saver_idx",  0,0,0, OPT_POWER, 5, NULL, NULL, 2 },
     { "Display", "Screensaver", "Saver Style", ST_CHOICE, "saver_style", 0,0,0, OPT_SAVERSTYLE, 6, NULL, NULL, 0 },
     { "Display", "Screensaver", "Screen Off",  ST_CYCLER, "screenoff_idx", 0,0,0, OPT_POWER, 5, NULL, NULL, 3 },
-    /* ---- Library ---- */
-    { "Library", "Browsing", "Artists",     ST_CYCLER, "artist_class", 0,0,0, OPT_ARTISTCLASS, 2, NULL, apply_artist_class, 0 },
-    { "Library", "Browsing", "Track Numbers", ST_TOGGLE, "track_numbers", 0,1,1, NULL, 0, NULL, apply_track_numbers, 0 },
-    { "Library", "Browsing", "Album View",  ST_CYCLER, "album_view", 0,0,0, OPT_ALBUMVIEW, 2, NULL, NULL, 0 },
-    { "Library", "Artwork and lyrics", "Online Album Art", ST_TOGGLE, "online_art", 0,1,1, NULL, 0, NULL, apply_online_art, 0 },
-    { "Library", "Artwork and lyrics", "Album Art Cache", ST_CYCLER, "artcache", 0,0,0, OPT_ARTCACHE, 3, NULL, apply_artcache, 0,
-      "Loads covers in advance" },
-    { "Library", "Artwork and lyrics", "Online Lyrics", ST_TOGGLE, "online_lyrics", 0,1,1, NULL, 0, NULL, NULL, 1 },
-    { "Library", "Maintenance", "Tag Encoding", ST_CYCLER, "old_tags", 0,0,0, OPT_OLDTAGS, 3, NULL, apply_old_tags, OLD_TAGS_AUTO,
-      "Text encoding of old tags" },
-    { "Library", "Maintenance", "Rescan Library", ST_ACTION, NULL, 0,0,0, NULL,0, "Scan", apply_rescan, 0 },
-    { "Library", "Maintenance", "Import Playlists", ST_ACTION, NULL, 0,0,0, NULL,0, "Import", apply_import_m3u, 0 },
+    /* ---- Library: removed (redesign: Library is the SD card's folders). Fixed: Tag Encoding Auto, no online art,
+     * art cache "Covers only"; Rescan stays as the Quick Settings tile ---- */
     /* ---- Controls ---- */
     { "Controls", NULL, "Quick Settings", ST_ACTION, NULL, 0,0,0, NULL,0, LV_SYMBOL_RIGHT, apply_qsconfig, 0 },
     { "Controls", NULL, "Vol Keys: Press", ST_CYCLER, "key_single", 0,0,0, OPT_VOLKEY, 2, NULL, apply_key_single, CTL_ACT_VOLUME },
@@ -776,21 +780,21 @@ static const setting_t TABLE[] = {
     /* ---- Battery & Power ---- */
     { "Battery & Power", NULL, "Charging Limit", ST_TOGGLE, "charge_protect", 0,1,1, NULL, 0, NULL, apply_charge_protect, 0 },
     { "Battery & Power", NULL, "Idle Power-off", ST_CYCLER, "idle_off_idx", 0,0,0, OPT_IDLE_OFF, POWER_IDLE_N, NULL, NULL, 0 },
-    /* ---- Device ---- */
-    { "Device", "Language and clock", "Language",    ST_CHOICE, "language", 0,0,0, i18n_lang_names, LANG_COUNT, NULL, apply_language, LANG_EN },
-    { "Device", "Language and clock", "Automatic Time", ST_TOGGLE, "auto_time", 0,1,1, NULL, 0, NULL, apply_auto_time, 1 },
-    { "Device", "Language and clock", "Set Date & Time", ST_ACTION, NULL, 0,0,0, NULL,0, LV_SYMBOL_RIGHT, apply_open_datetime, 0 },
-    { "Device", "Language and clock", "Time Zone",   ST_CHOICE, "tz_idx", 0,0,0, TZ_LABEL, TZ_COUNT, NULL, apply_timezone, 0 },
-    { "Device", "Language and clock", "24-Hour Time", ST_TOGGLE, "time_24h",  0,1,1, NULL, 0, NULL, apply_time, 1 },
+    /* ---- Device ---- (redesign: Language and Time apart; no Updates section - the author's updates can't install) */
+    { "Device", NULL, "Language",    ST_CHOICE, "language", 0,0,0, i18n_lang_names, LANG_COUNT, NULL, apply_language, LANG_EN },
+    { "Device", NULL, "Time",        ST_ACTION, NULL, 0,0,0, NULL,0, LV_SYMBOL_RIGHT, apply_open_time, 0 },
     { "Device", "Startup", "Default UI",  ST_CYCLER, "boot_default", 0,0,0, OPT_BOOTDEF, 2, NULL, apply_boot_default, 0 },
     { "Device", "Information", "Device Info", ST_ACTION, NULL, 0,0,0, NULL,0, LV_SYMBOL_RIGHT, system_about_open, 0 },
-    { "Device", "Updates", "Allow diskOS Updates", ST_TOGGLE, "ota_allow", 0,1,1, NULL, 0, NULL, system_ota_allow_changed, 1 },
-    { "Device", "Updates", "Automatic Update Checks", ST_TOGGLE, "ota_auto", 0,1,1, NULL, 0, NULL, system_ota_auto_changed, 0 },
-    { "Device", "Updates", "Update diskOS", ST_ACTION, NULL, 0,0,0, NULL,0, "Check", system_check_update_open, 0 },
-    { "Device", "Updates", "Stock Update Guide", ST_ACTION, NULL, 0,0,0, NULL,0, LV_SYMBOL_RIGHT, system_update_sd_open, 0 },
+    { "Device", "Information", "Check for Updates", ST_ACTION, NULL, 0,0,0, NULL,0, LV_SYMBOL_RIGHT, system_check_update_open, 0 },   /* CDOS: our signed releases */
     { "Device", "Maintenance", "Restart",     ST_ACTION, NULL, 0,0,0, NULL,0, "Restart", apply_restart, 0 },
-    { "Device", "Maintenance", "Reset diskOS Settings", ST_ACTION, NULL, 0,0,0, NULL,0, "Reset", system_reset_open, 0 },
+    { "Device", "Maintenance", "Reset CDOS Settings", ST_ACTION, NULL, 0,0,0, NULL,0, "Reset", system_reset_open, 0 },
     { "Device", "Maintenance", "Debug Mode",  ST_ACTION, NULL, 0,0,0, NULL,0, LV_SYMBOL_RIGHT, apply_debug_mode, 0 },
+    /* ---- Time: a page of its own under Device (not a top-level category). Set Date & Time shows only while
+     * Automatic Time is off (setlist_refresh) ---- */
+    { "Time", NULL, "Automatic Time", ST_TOGGLE, "auto_time", 0,1,1, NULL, 0, NULL, apply_auto_time, 1 },
+    { "Time", NULL, "Set Date & Time", ST_ACTION, NULL, 0,0,0, NULL,0, LV_SYMBOL_RIGHT, apply_open_datetime, 0 },
+    { "Time", NULL, "Time Zone",   ST_CHOICE, "tz_idx", 0,0,0, TZ_LABEL, TZ_COUNT, NULL, apply_timezone, 0 },
+    { "Time", NULL, "24-Hour Time", ST_TOGGLE, "time_24h",  0,1,1, NULL, 0, NULL, apply_time, 1 },
 };
 #define N_SETTINGS ((int)(sizeof(TABLE)/sizeof(TABLE[0])))
 
@@ -933,7 +937,7 @@ static lv_obj_t *g_setlist_root;            /* SCR_SETLIST root: one category's 
 static lv_obj_t *g_setlist_list;            /* current column; old-list delete events must not reset its offset */
 static const char *g_active_group;          /* which category SCR_SETLIST is currently showing */
 /* Category order for the top-level Settings screen (must match the group strings used in TABLE). */
-static const char *const GROUPS[] = { "Playback", "Audio", "Network", "Display", "Library", "Controls", "Battery & Power", "Device" };
+static const char *const GROUPS[] = { "Playback", "Audio", "Network", "Display", "Controls", "Battery & Power", "Device" };   /* redesign: no Library */
 #define N_GROUPS ((int)(sizeof(GROUPS)/sizeof(GROUPS[0])))
 static int32_t g_group_scroll[N_GROUPS];     /* returning from a detail keeps each category's place */
 
@@ -1093,7 +1097,7 @@ void setting_detail_refresh(void){
         lv_slider_set_range(sl, s->min, s->max);
         if(outdoor_holds(s)){ v = ui_effective_brightness(); lv_obj_add_state(sl, LV_STATE_DISABLED); }
         lv_slider_set_value(sl, v, LV_ANIM_OFF);
-        lv_obj_set_style_bg_color(sl, TC(CONTROL_TRACK), LV_PART_MAIN);
+        theme_slider_track(sl);
         lv_obj_set_style_bg_color(sl, ui_current_accent(), LV_PART_INDICATOR);
         lv_obj_set_style_bg_color(sl, TC(CONTROL_KNOB), LV_PART_KNOB);
         lv_obj_t *vl = lv_label_create(g_detail_root);
@@ -1105,18 +1109,17 @@ void setting_detail_refresh(void){
         ui_on(sl, detail_slider_cb, LV_EVENT_VALUE_CHANGED, vl, "settings.detail_slider.value", UI_CORE);
         lv_obj_add_event_cb(sl, detail_slider_release_cb, LV_EVENT_RELEASED, NULL);
         lv_obj_add_event_cb(sl, detail_slider_release_cb, LV_EVENT_PRESS_LOST, NULL);
-    } else if(s->type == ST_CHOICE){
+    } else if(s->type == ST_CHOICE || s->type == ST_CYCLER){   /* redesign: every option visible at once, no < > stepper */
         /* every option as a row; the current one ticked. Themes also show three colour dots (background, surface,
          * accent) in the current Dark/Light variant, so each can be judged before picking. */
         lv_obj_t *list = make_list(g_detail_root);
         if(s->opts == i18n_lang_names) lv_obj_set_height(list, 215);
-        int is_theme = !strcmp(s->cfg_key, "theme_preset");
+        int is_theme = s->cfg_key && !strcmp(s->cfg_key, "theme_preset");
         int is_saver = is_saver_row(s);
         lv_obj_t *sel = NULL;
         for(int i = 0; i < s->nopts; i++){
             lv_obj_t *row = setting_card(list);
             int cur = (i == v);
-            if(cur) lv_obj_set_style_bg_color(row, TC(SURFACE_SELECTED), 0);
             ui_on(row, detail_choice_cb, LV_EVENT_CLICKED, (void*)(intptr_t)i, "settings.detail_choice", UI_CORE);
             if(is_theme) kit_row_layout(row, KIT_ROW_SWATCH);
             int x = 18;
@@ -1139,7 +1142,7 @@ void setting_detail_refresh(void){
             lv_obj_t *lbl = lv_label_create(row);
             lv_label_set_text(lbl, tr(s->opts[i]));
             lv_obj_align(lbl, LV_ALIGN_LEFT_MID, x, 0);
-            lv_obj_set_style_text_font(lbl, s->opts == i18n_lang_names ? TF(USER_16) : TF(UI_16), 0);   /* native names: any script */
+            lv_obj_set_style_text_font(lbl, s->opts == i18n_lang_names ? TF(USER_18) : TF(UI_18), 0);   /* native names: any script */
             lv_obj_set_style_text_color(lbl, TC(TEXT_PRIMARY), 0);
             int custom = is_saver && i == SS_CUSTOM;   /* Custom: check + chevron (it opens the Custom page) */
             if(cur){
@@ -1158,8 +1161,7 @@ void setting_detail_refresh(void){
             theme_list_row(row);
         }
         if(sel) lv_obj_scroll_to_view(sel, LV_ANIM_OFF);   /* every picker opens with its current choice in view */
-    } else if(s->type == ST_CYCLER){
-        /* < value > stepper */
+    } else if(0){   /* the old < value > stepper (redesign: cyclers are lists, above) */
         lv_obj_t *vl = lv_label_create(g_detail_root);
         char b[24]; lv_label_set_text(vl, val_text(s,b,sizeof b));
         if(s->apply == apply_bt_codec){
@@ -1251,7 +1253,8 @@ void settings_open_key(const char *key){
 }
 
 /* ---- master list -------------------------------------------------------- */
-static void list_back_cb(lv_event_t *e){ if(lv_event_get_code(e)==LV_EVENT_CLICKED) screen_back(); }
+int setlist_back(void);
+static void list_back_cb(lv_event_t *e){ if(lv_event_get_code(e)==LV_EVENT_CLICKED && !setlist_back()) screen_back(); }
 
 static void row_cb(lv_event_t *e){
     if(lv_event_get_code(e)!=LV_EVENT_CLICKED) return;
@@ -1262,6 +1265,7 @@ static void row_cb(lv_event_t *e){
         if(setting_unavailable(s)){ ui_toast(tr("Not supported on this install")); return; }
         set_val(s, !get_val(s));
         settings_row_values_refresh();   /* read back AFTER the apply hook, including a refusal */
+        if(s->apply == apply_auto_time) lv_async_call(setlist_refresh_async, NULL);   /* Set Date & Time appears / goes */
         return;
     }
     if(s->type == ST_ACTION){
@@ -1283,9 +1287,9 @@ static lv_obj_t *make_list(lv_obj_t *root){
     lv_obj_t *list = lv_obj_create(root);
     lv_obj_remove_style_all(list);
     lv_obj_set_pos(list, 30, 70);
-    lv_obj_set_size(list, 300, 250);
+    lv_obj_set_size(list, 300, 290);
     lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_pad_row(list, 8, 0);       /* small gap between cards (matches the design) */
+    lv_obj_set_style_pad_row(list, 4, 0);       /* plain rows: a small gap */
     lv_obj_set_style_pad_bottom(list, 44, 0);   /* round bottom bezel: last row must scroll fully clear */
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);   /* rows on the centre line */
@@ -1295,15 +1299,14 @@ static lv_obj_t *make_list(lv_obj_t *root){
     return list;
 }
 
-/* one row card: a plain dark rounded pill (no accent bar - kept clean). */
+/* one row: redesign - plain text like the Library folder list (no card), a soft highlight only while pressed */
 static lv_obj_t *setting_card(lv_obj_t *list){
     lv_obj_t *row = lv_button_create(list);
     lv_obj_remove_style_all(row);
-    lv_obj_set_size(row, 268, 50);   /* every list's rows are 268 wide (Library's): one margin everywhere */
-    lv_obj_set_style_radius(row, 12, 0);
-    lv_obj_set_style_bg_color(row, TC(SURFACE), 0);
-    lv_obj_set_style_bg_opa(row, LV_OPA_70, 0);
-    lv_obj_set_style_bg_color(row, TC(SURFACE_PRESSED), LV_STATE_PRESSED);
+    lv_obj_set_size(row, 296, 56);   /* CDOS: every list's rows are 296 wide (Library's): one margin everywhere */
+    lv_obj_set_style_radius(row, 8, 0);
+    lv_obj_set_style_bg_color(row, TC(LIST_PRESSED), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(row, LV_OPA_70, LV_STATE_PRESSED);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
     return row;
 }
@@ -1313,9 +1316,9 @@ static lv_obj_t *setting_card(lv_obj_t *list){
  * Position edits a draft (custom_ov_draft_*): Save commits it, Back discards it, neither touches the image. Use Saved Image
  * reselects the saved custom row on a worker, the leave-Custom pattern mirrored (reserve, player, database, compensate). ---- */
 static lv_obj_t *g_cp_root, *g_cp_seg[CUSTOM_OV_POS_COUNT];
-#define CO_N 5   /* the overlay switches, in the order of the Overlays page */
-static const unsigned CO_BIT[CO_N] = { CUSTOM_OV_TIME, CUSTOM_OV_DATE, CUSTOM_OV_BATTERY, CUSTOM_OV_TRACK, CUSTOM_OV_WEATHER };
-static const char *const CO_NAME[CO_N] = { "Time", "Date", "Battery", "Now Playing", "Weather" };
+#define CO_N 4   /* the overlay switches, in the order of the Overlays page */
+static const unsigned CO_BIT[CO_N] = { CUSTOM_OV_TIME, CUSTOM_OV_DATE, CUSTOM_OV_BATTERY, CUSTOM_OV_TRACK };   /* Weather: removed (redesign) */
+static const char *const CO_NAME[CO_N] = { "Time", "Date", "Battery", "Now Playing" };
 #define CU_FAILED "Could not use the saved image - previous kept"
 static int cu_saved(custom_saver_asset *a){   /* the read waits for nothing (saver.c reads the same way on the UI thread) */
     struct stat sb;
@@ -1387,9 +1390,9 @@ static lv_obj_t *cp_label(lv_obj_t *row, const char *text, int y, int w, const l
 static lv_obj_t *cp_row(lv_obj_t *list, const char *title, const char *sub, lv_event_cb_t cb, const char *id, int chevron){
     lv_obj_t *row = setting_card(list);
     if(cb) ui_on(row, cb, LV_EVENT_CLICKED, NULL, id, UI_CORE); else lv_obj_remove_flag(row, LV_OBJ_FLAG_CLICKABLE);
-    int w = chevron ? 214 : 190;   /* clear of the chevron, or of the format chip */
-    cp_label(row, tr(title), 6, w, TF(UI_16), cb ? TC(TEXT_PRIMARY) : TC(TEXT_MUTED));
-    cp_label(row, tr(sub), 27, w, TF(UI_14), cb ? TC(TEXT_SECONDARY) : TC(TEXT_MUTED));
+    int w = chevron ? 242 : 218;   /* clear of the chevron, or of the format chip */
+    cp_label(row, tr(title), 7, w, TF(UI_18), cb ? TC(TEXT_PRIMARY) : TC(TEXT_MUTED));
+    cp_label(row, tr(sub), 31, w, TF(UI_16), cb ? TC(TEXT_SECONDARY) : TC(TEXT_MUTED));
     if(chevron){
         lv_obj_t *ch = lv_label_create(row);
         lv_label_set_text(ch, LV_SYMBOL_RIGHT);
@@ -1457,7 +1460,7 @@ void settings_custom_refresh(void){
     lv_obj_t *sv = lv_button_create(list);
     lv_obj_remove_style_all(sv);
     kit_button(sv);
-    lv_obj_set_size(sv, 268, 50);
+    lv_obj_set_size(sv, 296, 50);
     lv_obj_set_style_radius(sv, 25, 0);
     lv_obj_set_style_bg_color(sv, ui_current_accent(), 0);
     lv_obj_set_style_bg_opa(sv, LV_OPA_COVER, 0);
@@ -1600,18 +1603,18 @@ void settings_create(lv_obj_t *root){
 
         lv_obj_t *lbl = lv_label_create(row);
         lv_label_set_text(lbl, tr(GROUPS[g]));
-        lv_obj_set_pos(lbl, 18, 15);
-        lv_obj_set_width(lbl, 210);
+        lv_obj_set_pos(lbl, 18, 16);
+        lv_obj_set_width(lbl, 238);
         lv_label_set_long_mode(lbl, LV_LABEL_LONG_DOT);
-        lv_obj_set_style_text_font(lbl, TF(UI_16), 0);
+        lv_obj_set_style_text_font(lbl, TF(UI_18), 0);
         lv_obj_set_style_text_color(lbl, TC(TEXT_PRIMARY), 0);
 
         lv_obj_t *ch = lv_label_create(row);   /* drill-down chevron */
         lv_obj_clear_flag(ch, LV_OBJ_FLAG_CLICKABLE);
         lv_label_set_text(ch, LV_SYMBOL_RIGHT);
         lv_obj_align(ch, LV_ALIGN_RIGHT_MID, -14, 0);
-        lv_obj_set_style_text_font(ch, TF(UI_16), 0);
-        lv_obj_set_style_text_color(ch, TC(TEXT_MUTED), 0);
+        lv_obj_set_style_text_font(ch, TF(UI_18), 0);
+        lv_obj_set_style_text_color(ch, TC(TEXT_DISABLED), 0);
         if(theme_trait(THEME_TRAIT_FLAT_LISTS)) lv_obj_set_style_text_font(lbl, TF(UI_20), 0);   /* big mono rows */
         lv_obj_set_height(lbl, lv_font_get_line_height(lv_obj_get_style_text_font(lbl, 0)));
         theme_list_row(row);
@@ -1680,11 +1683,11 @@ static void setlist_heading(lv_obj_t *list, const char *text, int first){
     lv_obj_clear_flag(h, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
     lv_label_set_text(h, tr(text));
     lv_label_set_long_mode(h, LV_LABEL_LONG_DOT);               /* one line; a long translation ends in "..." */
-    lv_obj_set_style_text_font(h, TF(UI_12), 0);
+    lv_obj_set_style_text_font(h, TF(UI_14), 0);
     lv_obj_set_style_text_color(h, TC(TEXT_SECONDARY), 0);
     lv_obj_set_style_pad_left(h, 18, 0);
     lv_obj_set_style_pad_top(h, first ? 0 : 13, 0);
-    lv_obj_set_size(h, 268, (first ? 0 : 13) + lv_font_get_line_height(TF(UI_12)));
+    lv_obj_set_size(h, 296, (first ? 0 : 13) + lv_font_get_line_height(TF(UI_14)));
 }
 /* Battery & Power opens with a summary of the fuel gauge (percent, health, cycles, temperature). It is
  * information, not a row: nothing in it is tappable. Read when the page is built. */
@@ -1701,7 +1704,7 @@ static void setlist_battery_summary(lv_obj_t *list){
     lv_obj_clear_flag(l, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
     lv_label_set_text(l, t);
     lv_label_set_long_mode(l, LV_LABEL_LONG_CLIP);
-    lv_obj_set_width(l, 268);
+    lv_obj_set_width(l, 296);
     lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_font(l, TF(UI_14), 0);
     lv_obj_set_style_text_color(l, TC(TEXT_SECONDARY), 0);
@@ -1709,6 +1712,16 @@ static void setlist_battery_summary(lv_obj_t *list){
     lv_obj_set_style_pad_bottom(l, 6, 0);
 }
 
+/* Device -> Time is a page of the same screen: Back (header or swipe) returns to Device instead of leaving */
+static const char *const TIME_GROUP = "Time";
+static void setlist_open_time(void){ setlist_scroll_remember(); g_active_group = TIME_GROUP; setlist_refresh(); }
+int setlist_back(void){
+    if(screen_current() != SCR_SETLIST || g_active_group != TIME_GROUP) return 0;
+    g_active_group = GROUPS[N_GROUPS - 1];   /* "Device" */
+    setlist_refresh();
+    return 1;
+}
+static void setlist_refresh_async(void *u){ (void)u; setlist_refresh(); }
 void setlist_refresh(void){
     if(!g_setlist_root || !g_active_group) return;
     int gi = active_group_index();
@@ -1729,6 +1742,7 @@ void setlist_refresh(void){
     for(int i=0;i<N_SETTINGS;i++){
         const setting_t *s = &TABLE[i];
         if(strcmp(s->group, g_active_group)) continue;   /* only rows in this category */
+        if(s->apply == apply_open_datetime && cfg_get_int("auto_time", 1)) continue;   /* manual time: only with Automatic off */
         if(s->section && (!section || strcmp(section, s->section))) setlist_heading(list, s->section, lv_obj_get_child_count(list) == 0);
         section = s->section;
         const radio_row_t *rr = radio_row((const void *)s->apply);
@@ -1739,20 +1753,29 @@ void setlist_refresh(void){
 
         lv_obj_t *lbl = lv_label_create(row);
         lv_label_set_text(lbl, tr(s->label));
-        lv_obj_set_pos(lbl, 18, 6);
-        lv_obj_set_size(lbl, 232, 20);
+        lv_obj_set_pos(lbl, 18, 7);
+        lv_obj_set_size(lbl, 260, 24);
         lv_label_set_long_mode(lbl, LV_LABEL_LONG_DOT);
-        lv_obj_set_style_text_font(lbl, TF(UI_16), 0);
+        lv_obj_set_style_text_font(lbl, TF(UI_18), 0);
         lv_obj_set_style_text_color(lbl, TC(TEXT_PRIMARY), 0);
 
+        if(s->type == ST_CYCLER || s->type == ST_CHOICE || s->type == ST_SLIDER){   /* opens a page: name, value below, chevron */
+            lv_obj_set_width(lbl, 238);
+            lv_obj_t *ch = lv_label_create(row);
+            lv_obj_clear_flag(ch, LV_OBJ_FLAG_CLICKABLE);
+            lv_label_set_text(ch, LV_SYMBOL_RIGHT);
+            lv_obj_align(ch, LV_ALIGN_RIGHT_MID, -14, 0);
+            lv_obj_set_style_text_font(ch, TF(UI_18), 0);
+            lv_obj_set_style_text_color(ch, TC(TEXT_DISABLED), 0);
+        }
         char b[24]; const char *value = val_text(s, b, sizeof b);
         lv_obj_t *vl = lv_label_create(row);
         lv_label_set_text(vl, value);
-        lv_obj_set_pos(vl, 18, 27);
-        lv_obj_set_size(vl, 232, 18);
+        lv_obj_set_pos(vl, 18, 31);
+        lv_obj_set_size(vl, s->type == ST_TOGGLE ? 260 : 238, 20);
         lv_label_set_long_mode(vl, LV_LABEL_LONG_DOT);
         lv_obj_set_style_text_align(vl, LV_TEXT_ALIGN_LEFT, 0);
-        lv_obj_set_style_text_font(vl, s->opts == i18n_lang_names ? TF(USER_14) : TF(UI_14), 0);
+        lv_obj_set_style_text_font(vl, s->opts == i18n_lang_names ? TF(USER_16) : TF(UI_16), 0);
         lv_obj_set_style_text_color(vl, (s->type==ST_READONLY || setting_unavailable(s)) ? TC(TEXT_MUTED) : TC(TEXT_SECONDARY), 0);
         if(s->type == ST_ACTION && !rr){
             /* Measure both captions with their final theme faces; a long name wraps beside the action. */
@@ -1768,7 +1791,7 @@ void setlist_refresh(void){
                              lv_obj_get_style_text_letter_space(vl, 0), 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
             vw = sz.x + 4; if(vw < 46) vw = 46; if(vw > 116) vw = 116;
             lv_obj_set_pos(lbl, 18, 10);
-            lv_obj_set_size(lbl, 250 - vw - 8 - 18, LV_SIZE_CONTENT);
+            lv_obj_set_size(lbl, 278 - vw - 8 - 18, LV_SIZE_CONTENT);
             lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
             lv_obj_set_size(vl, vw, LV_SIZE_CONTENT);
             lv_label_set_long_mode(vl, LV_LABEL_LONG_WRAP);
@@ -1776,7 +1799,8 @@ void setlist_refresh(void){
             lv_obj_update_layout(row);
             int h = lv_obj_get_height(lbl) > lv_obj_get_height(vl) ? lv_obj_get_height(lbl) : lv_obj_get_height(vl);
             lv_obj_set_y(lbl, 10 + (h - lv_obj_get_height(lbl)) / 2);
-            lv_obj_set_pos(vl, 250 - vw, 10 + (h - lv_obj_get_height(vl)) / 2);
+            lv_obj_set_pos(vl, 278 - vw, 10 + (h - lv_obj_get_height(vl)) / 2);
+            if(s->ro_val == LV_SYMBOL_RIGHT) lv_obj_set_style_text_color(vl, TC(TEXT_DISABLED), 0);   /* the same quiet chevron as every row */
             lv_obj_set_height(row, h + 20);
             if(theme_kit()->row_decor) theme_kit()->row_decor(row, lbl);
         }
@@ -1804,9 +1828,9 @@ void setlist_refresh(void){
             }
             kit_isolate(row);  /* preserve the measured height and the real switch through later passes */
             const int has_help = s->desc && s->desc[0];
-            lv_obj_set_size(lbl, rr ? 170 : 174, LV_SIZE_CONTENT);   /* a radio caption ends before the switch target, also at a theme's x24 */
+            lv_obj_set_size(lbl, rr ? 198 : 202, LV_SIZE_CONTENT);   /* a radio caption ends before the switch target, also at a theme's x24 */
             lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
-            lv_obj_set_width(vl, 232);
+            lv_obj_set_width(vl, 260);
             lv_label_set_long_mode(vl, LV_LABEL_LONG_DOT);   /* one line; a long translation ends in "..." */
             lv_label_set_text(vl, has_help ? tr(s->desc) : "");
             lv_obj_set_height(vl, lv_font_get_line_height(lv_obj_get_style_text_font(vl, 0)));
@@ -1816,7 +1840,7 @@ void setlist_refresh(void){
                 lv_label_set_text_fmt(reason, "%s.", val_text(s,b,sizeof b));
                 lv_obj_set_style_text_font(reason, TF(UI_12), 0);
                 lv_obj_set_style_text_color(reason, TC(TEXT_MUTED), 0);
-                lv_obj_set_width(reason, 232);
+                lv_obj_set_width(reason, 260);
                 lv_label_set_long_mode(reason, LV_LABEL_LONG_WRAP);
                 lv_obj_set_x(reason, lv_obj_get_style_x(vl, 0));
             }
@@ -1827,7 +1851,7 @@ void setlist_refresh(void){
                 ui_on(sw, radio_switch_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)i, "settings.radio_switch", UI_CORE);
             }
             theme_settings_switch(sw);
-            lv_obj_set_x(sw, 206);
+            lv_obj_set_x(sw, 234);
             if(rr) radio_switch_paint(rr, sw);
             else if(get_val(s)) lv_obj_add_state(sw, LV_STATE_CHECKED);
             if(!rr && setting_unavailable(s)) lv_obj_add_state(sw, LV_STATE_DISABLED);

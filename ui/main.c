@@ -31,6 +31,7 @@
 #include "fb_pan.h"
 #include "controls.h"
 #include "screens.h"
+#include "folderbrowser.h"
 #include "modes.h"
 #include "receiver.h"
 #include "device_names_ui.h"
@@ -1963,7 +1964,12 @@ static void localplayer_workmode_cb(lv_timer_t *t){
     fprintf(stderr,"v2.40 workmode: local-init sent once (gen %u)\n", gen); fflush(stderr);
 }
 void ui_rescan_library(void){
-    if(scanner_active()){ if(scanner_cancel()) ui_toast("Cancelling scan..."); return; }   /* refused once it is committing: completion reports */   /* the row reads "Stop" while a scan runs */
+    if(scanner_active()){   /* CDOS: a second tap never cancels (it was easy to stop a scan by accident) - it shows progress */
+        int done = 0, total = 0; scanner_progress(&done, &total);
+        char b[64]; snprintf(b, sizeof b, done > 0 ? "Scanning library... %d files" : "Scanning library...", done);
+        ui_toast(b);
+        return;
+    }
     if(!ui_local_playback_allowed()){ ui_toast("Return to local playback to scan"); return; }
     if(!sd_io_allowed()){ ui_toast("SD card is not ready"); return; }
     if(scanner_start() != 0){ ui_toast("Couldn't start library scan"); return; }
@@ -2291,7 +2297,17 @@ int ui_play_song_by_path(const char *path){
     if(!path || !*path) return 0;
     int id = mdb_song_id_by_path(path);
     if(id < 0){ ui_toast("Library busy - try again"); return 0; }
-    if(id == 0){ ui_toast("Not in library"); return 0; }
+    if(id == 0){
+        /* CDOS: a song the library doesn't know yet is usually new music copied to the card - scan once (per run)
+         * instead of making the user find Rescan. A file that still isn't indexed (e.g. an unsupported format) toasts. */
+        static int auto_scanned;
+        if(!auto_scanned && !scanner_active() && ui_local_playback_allowed() && sd_io_allowed() && scanner_start() == 0){
+            auto_scanned = 1;
+            ui_toast("New music - updating library...");
+        } else if(scanner_active()) ui_toast("Updating library - try again soon");
+        else ui_toast("Not in library");
+        return 0;
+    }
     int pos = mdb_play_pos(id, 1, "");
     if(pos < 1){ ui_toast("Couldn't find that song"); return 0; }
     return ui_play_list_tap(1, "", pos, id);
@@ -4830,6 +4846,7 @@ int main(int argc, char **argv){
     cfg_load();
     (void)route_state_restore();  /* restore the live player's route before BT-off/disconnect handlers run */
     fontft_init();
+    redesign_fixed_settings();   /* the redesign's fixed values (theme, Dark, Resume...) before anything reads them */
     theme_init();   /* the palette for this run: before any screen is built */
     swipe_thresh_load();
     int boot_br = read_int_file("/sys/class/backlight/backlight/brightness");   /* the player's value before ours */
@@ -4859,7 +4876,7 @@ int main(int argc, char **argv){
     dnui_init();
     bt_boot_restore();                           /* re-enable BT + arm auto-route if it was on (persist like WiFi) */
     g_t_wx  = lv_timer_create(weather_poll, 1000, NULL);  /* apply weather + retry/refresh */
-    if(cfg_get_int("weather_on", 1)) weather_fetch_async();   /* first fetch - only with Weather on (Settings off = no network use) */
+    if(WEATHER_FEATURE_ON()) weather_fetch_async();   /* first fetch - only with Weather on (Settings off = no network use) */
     g_t_lyr = lv_timer_create(lyrics_poll, 500, NULL);    /* apply finished lyrics fetch */
     lastfm_init();                                        /* load Last.fm config + offline queue */
     lv_timer_create(lastfm_tick, 1000, NULL);            /* watch play-state + drive scrobbles */
@@ -4964,6 +4981,8 @@ int main(int argc, char **argv){
     int sx=0, sy=0, lastx=0, lasty=0; uint32_t sms=0; int s_press_scr=SCR_HOME;   /* swipe tracking + the screen the press began on */
     int nav_press_ok = 0;   /* the press began where a Home swipe may apply (nav_swipe_ok at the press) */
     int edge_back = 0;      /* a left-edge press that may finish as a Back at any speed (cleared when the gesture turns into something else) */
+    int back_ok = 0;        /* a press anywhere that may become a Back swipe (redesign: not only from the left edge) */
+    int back_locked = 0;    /* the slide is a Back swipe: LVGL was told to ignore this touch (no row click on release) */
     int cover_tap=0;   /* press landed on the NP cover -> LVGL's cover click opens full-screen art (not a seek) */
     int fsart_touch=0; /* press began while full-screen art was up -> LVGL's overlay click closes it; we only swallow */
     int sleep_touch=0; /* press began while the sleep popover was up -> swallow the whole gesture (no ring seek) */
@@ -5278,6 +5297,9 @@ int main(int argc, char **argv){
                     }                                   /* the left edge is reserved for the back-swipe (not armed as a drag) */
                     nav_press_ok = nav_swipe_ok(s_press_scr, fsart_touch || sleep_touch || modal_touch, bl_state != 2);
                     edge_back = nav_press_ok && sx < BACK_START_MAX_X && !screen_on_drag_control(sx, sy);   /* a slow slide from the left edge is still a Back; a slider keeps its drag */
+                    back_ok = nav_press_ok && !screen_on_drag_control(sx, sy) &&
+                              s_press_scr != SCR_NOWPLAYING && s_press_scr != SCR_ALBUMWALL;   /* those two own horizontal drags */
+                    back_locked = 0;
                     fprintf(stderr,"TAP x=%d y=%d\n",sx,sy); fflush(stderr);
                     if(g_dbg && g_dbgdot){
                         lv_obj_set_pos(g_dbgdot, sx-13, sy-13);
@@ -5305,6 +5327,11 @@ int main(int argc, char **argv){
                     nav_press_ok = 0;
                 if(!nav_press_ok || (lv_indev_get_scroll_obj(g_touch) && lv_indev_get_scroll_dir(g_touch) == LV_DIR_VER))
                     edge_back = 0;
+                if(!nav_press_ok || rim_own || (!back_locked && lv_indev_get_scroll_obj(g_touch))) back_ok = 0;
+                if(back_ok && !back_locked){
+                    int bdx = p.x - sx, bdy = p.y - sy; if(bdy < 0) bdy = -bdy;
+                    if(bdx >= 24 && bdx > 2 * bdy){ back_locked = 1; lv_indev_wait_release(g_touch); }   /* a clear rightward slide */
+                }
             } else if(ts==LV_INDEV_STATE_RELEASED && prev_ts==LV_INDEV_STATE_PRESSED){
                 /* The evdev driver can fuse the final movement into the release frame, so the last PRESSED
                  * sample (lastx/lasty) may lag the true lift point. Fold the release coordinates in (bounds-
@@ -5358,9 +5385,7 @@ int main(int argc, char **argv){
                               vert && dy>0 && dy>=g_swipe_thresh && dt<700){
                         screen_show(SCR_QUICK);              /* pull down from top edge */
                         quicksettings_refresh(ui_view_playing());
-                    } else if(sy >= HOME_SWIPE_Y && vert && dy<0 && ady>=g_swipe_thresh && dt<700 &&
-                              nav_press_ok && cur==s_press_scr && nav_swipe_ok(cur, 0, bl_state != 2)){
-                        go_home(cur);                        /* quick swipe up from the bottom edge = Home */
+                    /* CDOS: no swipe-up-from-the-bottom Home gesture (it fired while scrolling lists) */
                     } else if(cur==SCR_NOWPLAYING){
                         /* On Now Playing a nav swipe must be a LONG, STRAIGHT,
                          * horizontal slide (so it's not confused with a seek drag
@@ -5369,9 +5394,6 @@ int main(int argc, char **argv){
                             if(dx < 0) screen_show(SCR_NPHUB);
                             else       screen_back();
                         }
-                    } else if(cur==SCR_HOME && horiz && dx<0 && adx>=g_swipe_thresh && dt<700){
-                        apps_reload();
-                        screen_show(SCR_APPS);    /* slide in the Apps panel */
                     } else if(cur==SCR_ALBUMWALL && s_press_scr==SCR_ALBUMWALL){
                         /* gated on s_press_scr so the very tap that OPENED the cover flow (a click on the
                          * Library "Albums" row) is never re-read here as a cover tap that plays. */
@@ -5386,15 +5408,17 @@ int main(int argc, char **argv){
                             albumwall_drag(lastx);              /* apply the (fused) final finger position first */
                             albumwall_drag_end();               /* then finger drag -> inertial fling + snap */
                         }
-                    } else if(horiz && dx>0 && adx>=g_swipe_thresh && (dt<700 || slow) &&
-                              sx < BACK_START_MAX_X){
+                    } else if(horiz && dx>0 && adx>=g_swipe_thresh &&
+                              ((sx < BACK_START_MAX_X && (dt<700 || slow)) || back_locked)){
                         fprintf(stderr,"BACK swipe sx=%d dx=%d dy=%d dt=%u\n",sx,dx,dy,dt); fflush(stderr);
                         /* inside Library, step through its sub-views first */
-                        if(!(cur==SCR_LIBRARY && library_back())) screen_back();
+                        if(cur==SCR_FOLDER) folderbrowser_back();   /* a subfolder goes up a level; the root leaves */
+                        else if(cur==SCR_SETLIST && setlist_back()) ;   /* Settings: Time -> Device */
+                        else if(!(cur==SCR_LIBRARY && library_back())) screen_back();
                     }
                     }
                 }
-                edge_back = 0; nav_press_ok = 0;   /* every release ends the gesture: rim scroll, seek, overlay and wake releases too */
+                edge_back = 0; nav_press_ok = 0; back_ok = 0; back_locked = 0;   /* every release ends the gesture: rim scroll, seek, overlay and wake releases too */
             }
             if(!shutdown_touch) prev_ts = ts;
         }
@@ -5579,6 +5603,7 @@ int main(int argc, char **argv){
             /* manual sleep runs its dim/off countdown from the tile tap, independent of the
              * (possibly disabled) auto-saver timer */
             uint32_t idle = manual ? lv_tick_elaps(g_manual_sleep_at) : lv_tick_elaps(last_activity);
+            if(!manual && in_saver && saver_np_vinyl()) idle /= 2;   /* Vinyl mode (tap on the cover) stays lit twice as long */
             int past_dim = (saver_timeout > 0 && idle > (uint32_t)saver_timeout*1000);
             /* auto-enter only in timeout mode AND only when the saver is appropriate now (art
              * savers need playback). The Sleep tile already opened SCR_SAVER (manual).
@@ -5615,7 +5640,7 @@ int main(int argc, char **argv){
                 if(screen_current()==SCR_SAVER) screen_back();
             }
         } else if(screenoff_extra > 0 && bl_state==0 &&
-                  lv_tick_elaps(last_activity) > (uint32_t)screenoff_extra*1000){
+                  lv_tick_elaps(last_activity) / (in_saver && saver_np_vinyl() ? 2u : 1u) > (uint32_t)screenoff_extra*1000){
             /* No saver means no dim stage: honour the one selected deadline,
              * without adding a second delay or opening a screen just to close it. */
             ui_backlight(0); bl_state = 2; g_screen_off = 1;

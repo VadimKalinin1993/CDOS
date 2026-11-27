@@ -142,7 +142,7 @@ int sys_about_collect(const sys_paths_t *pp, const char *diskos_id, sys_about_ro
     char fw[16]; sys_fw_label(mv, fw, sizeof fw);
     if(rv > 0) add_row(rows, &n, max, "Firmware", "%s (recovery %d)", fw, rv);
     else       add_row(rows, &n, max, "Firmware", "%s", fw);
-    add_row(rows, &n, max, "diskOS", "%s", diskos_id && *diskos_id ? diskos_id : "--");
+    add_row(rows, &n, max, "CDOS", "%s", diskos_id && *diskos_id ? diskos_id : "--");
     add_row(rows, &n, max, "Wi-Fi MAC", "%s", read_small(p->wlan_mac, mac, sizeof mac) == 0 && mac[0] ? mac : "--");
     add_row(rows, &n, max, "Bluetooth MAC", "%s", read_small(p->bt_mac, mac, sizeof mac) == 0 && mac[0] ? mac : "unavailable");
     struct statvfs sv;
@@ -445,7 +445,7 @@ static void notice_poll(void){
         strcpy(g_notice.announced, g_notice.available);
         g_notice.waiting = 1;
     }
-    char msg[80]; snprintf(msg, sizeof msg, tr("diskOS %s is available"), g_notice.available);
+    char msg[80]; snprintf(msg, sizeof msg, tr("CDOS %s is available"), g_notice.available);
     if(ui_toast_hint(msg)) g_notice.waiting = 0;
 }
 static void cb_ota_later(lv_event_t *e){
@@ -520,7 +520,7 @@ static void dl_tick(lv_timer_t *t){
     atomic_store(&g_dl.state, 0);
     modal_close();
     if(rc == OTA_OK){
-        snprintf(body, sizeof body, "diskOS %s is ready. Restart to finish updating.", g_dl.pg.version);
+        snprintf(body, sizeof body, "CDOS %s is ready. Restart to finish updating.", g_dl.pg.version);
         settings_restart_prompt(body);
     } else if(rc == OTA_E_CANCEL) ui_toast("Update cancelled");
     else if(rc == OTA_E_SPACE){
@@ -542,7 +542,7 @@ static void cb_ota_go(lv_event_t *e){
     const char *tag = lv_obj_get_user_data(lv_event_get_target(e));
     snprintf(g_dl.tag, sizeof g_dl.tag, "%s", tag);
     if(pthread_create(&g_dl.th, NULL, dl_thread, NULL) != 0){ atomic_store(&g_dl.state, 0); modal_close(); ui_toast("Couldn't start the update"); return; }
-    ui_dialog_t d = dlg_open("Updating diskOS");
+    ui_dialog_t d = dlg_open("Updating CDOS");
     g_dl_owner = g_m;
     lv_obj_add_event_cb(g_dl_owner, dl_delete, LV_EVENT_DELETE, NULL);
     g_dl_lbl = dlg_text(&d, tr("Downloading..."), THEME_CLR_TEXT_MUTED);
@@ -568,15 +568,15 @@ static void chk_tick(lv_timer_t *t){
     char body[260]; int c = sys_ver_cmp(DISKOS_VERSION, g_chk.tag);
     atomic_store(&g_chk.state, 0);
     if(c == -1 && g_chk.bundle && ota_supported(&OTA_DEV) && !ota_allowed()){    /* reported, never downloaded */
-        snprintf(body, sizeof body, tr("diskOS %s is available (you have %s). Updates are turned off in Settings. Turn on Allow diskOS Updates, or install it with the installer from github.com/b0hemia/diskos."), g_chk.tag, DISKOS_VERSION);
-        modal_simple(tr("diskOS updates"), body);
+        snprintf(body, sizeof body, tr("CDOS %s is available (you have %s). Updates are turned off in Settings. Turn on updates and try again."), g_chk.tag, DISKOS_VERSION);
+        modal_simple(tr("CDOS updates"), body);
         return;
     }
     if(c == -1 && g_chk.bundle && ota_supported(&OTA_DEV)){
-        snprintf(body, sizeof body, tr("diskOS %s is available (you have %s). Download and install it now?"), g_chk.tag, DISKOS_VERSION);
+        snprintf(body, sizeof body, tr("CDOS %s is available (you have %s). Download and install it now?"), g_chk.tag, DISKOS_VERSION);
         char *offer = strdup(g_chk.tag);
         if(!offer){ ui_toast("Couldn't start the check"); return; }
-        ui_dialog_t d = dlg_open("diskOS update");
+        ui_dialog_t d = dlg_open("CDOS update");
         dlg_text(&d, body, THEME_CLR_TEXT_MUTED);
         lv_obj_t *later = ui_dialog_button(&d, "Later", THEME_CLR_TEXT_SECONDARY, cb_ota_later, "system.ota_later");
         lv_obj_t *go = ui_dialog_button(&d, "Update", THEME_CLR_ACCENT_EMPHASIS, cb_ota_go, "system.ota_go");
@@ -586,11 +586,11 @@ static void chk_tick(lv_timer_t *t){
         ui_dialog_finalize(&d);
         return;
     }
-    if(c == -1) snprintf(body, sizeof body, "diskOS %s is available (you have %s), but it has no in-app update. Download it from github.com/b0hemia/diskos and install it with the installer.", g_chk.tag, DISKOS_VERSION);
+    if(c == -1) snprintf(body, sizeof body, "CDOS %s is available (you have %s), but it has no in-app update. Download it from github.com/VadimKalinin1993/CDOS and install it with the installer.", g_chk.tag, DISKOS_VERSION);
     else if(c == 0) snprintf(body, sizeof body, "You have the latest release (%s).", DISKOS_VERSION);
     else if(c == 1) snprintf(body, sizeof body, "You have %s, newer than the latest release (%s).", DISKOS_VERSION, g_chk.tag);
     else snprintf(body, sizeof body, "Latest release: %s. Couldn't compare it with %s.", g_chk.tag, DISKOS_VERSION);
-    modal_simple("diskOS updates", body);
+    modal_simple("CDOS updates", body);
 }
 /* All coordinator entry points run on the UI thread. Eligibility wiring
  * cancels automatic-only work; attached manual work is unaffected. */
@@ -708,7 +708,7 @@ static void cb_goback(lv_event_t *e){
     settings_restart_prompt(tr("Restart to go back to the previous version."));
 }
 static void ota_keep_prompt(void){
-    char t[64]; snprintf(t, sizeof t, tr("Keep diskOS %s?"), g_hl.ver);
+    char t[64]; snprintf(t, sizeof t, tr("Keep CDOS %s?"), g_hl.ver);
     ui_dialog_t d = dlg_open(t);
     dlg_text(&d, tr("This update has been running for a few minutes. Keep it, or go back to the previous version (the device restarts)."), THEME_CLR_TEXT_MUTED);
     ui_dialog_button(&d, tr("Go back"), THEME_CLR_STATUS_DANGER, cb_goback, "system.ota_goback");
@@ -772,7 +772,7 @@ void system_check_update_open(int v){
     char pv[40];
     if(atomic_load(&g_dl.state) != 0){ ui_toast("Already updating"); return; }
     if(ota_allowed() && ota_pending(&OTA_DEV, pv, sizeof pv)){   /* a verified bundle is already staged: only a restart is left */
-        char n[120]; snprintf(n, sizeof n, "diskOS %s is ready. Restart to finish updating.", pv);
+        char n[120]; snprintf(n, sizeof n, "CDOS %s is ready. Restart to finish updating.", pv);
         settings_restart_prompt(n);
         return;
     }
@@ -804,7 +804,7 @@ void system_names_reset_applied(void){
 }
 void system_reset_open(int v){
     (void)v;
-    ui_dialog_t d = dlg_open("Reset diskOS settings?");
+    ui_dialog_t d = dlg_open("Reset CDOS settings?");
     dlg_text(&d, "Resets look, behaviour, both Disc names and paired nicknames. Keeps music, pairings, Wi-Fi, Last.fm, EQ and audio. Reboot for network; Bluetooth on for nicknames.", THEME_CLR_TEXT_MUTED);
     ui_dialog_button(&d, "Cancel", THEME_CLR_TEXT_SECONDARY, cb_close, "system.reset_cancel");
     ui_dialog_button(&d, "Reset", THEME_CLR_STATUS_DANGER, cb_reset_go, "system.reset_go");

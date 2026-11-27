@@ -212,6 +212,8 @@ void saver_show_sync(void);   /* apply saver-style + accent immediately on saver
 void saver_leave(void);        /* the saver is being left by any path: free the Custom image and its overlay (screenmgr.c) */
 void saver_dark(void);         /* the panel went dark: same, and nothing Custom is built until a lit saver entry (main.c) */
 void saver_wake(void);         /* the panel is lit again: show the one deferred Custom message, if due (main.c) */
+int  saver_np_vinyl(void);     /* 1 = the saver is up as Vinyl mode (opened from the Now Playing cover) */
+void saver_open_vinyl(void);   /* open the saver as spinning Vinyl, whatever the Screensaver setting */
 int  saver_wants_bright(void);/* 1 = keep full brightness (vinyl art showcase), don't dim */
 int  ui_run_bounded(char *const argv[], int timeout_ms);  /* external cmd as a killable child w/ hard timeout */
 void ui_decode_lock(void);
@@ -296,6 +298,8 @@ void ui_glyph_center_ink(lv_obj_t *label);                /* a one-icon label ce
 int  ui_pp_icon_playing(int real_playing);   /* returns the play/pause glyph state: prediction if held, else real */
 const char *ui_eq_name(int i);   /* EQ preset name for index 0..20 (drawer toast) */
 void ui_rescan_library(void);
+void redesign_fixed_settings(void);   /* settings.c: the values the redesign fixes (before theme_init) */
+int  setlist_back(void);              /* settings.c: Back inside Settings pages (Time -> Device); 1 = handled */
 int ui_theme_reload_setting(const char *screen,const char *key,int previous);
 int  ui_theme_reload(const char *screen);   /* re-launch the UI to apply a theme change (main.c) */
 int  ui_play_mode_now(void);           /* the play mode the player is using (0..4), -1 unknown (main.c) */
@@ -355,6 +359,8 @@ void home_set_art_enabled(int on);   /* 0 = the theme's Home pill shows no album
 void home_set_backdrop_enabled(int on);   /* 0 = no blurred cover behind Home (the theme's own background) */
 void home_set_status(int batt, int charging, int wifi, int bt);
 void home_set_weather(const char *text);
+/* Weather is removed from this build (redesign): no fetch, no display, no Settings rows. */
+#define WEATHER_FEATURE_ON() 0
 /* weather.c */
 void weather_fetch_async(void);
 void weather_poll(lv_timer_t *t);

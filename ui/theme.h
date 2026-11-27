@@ -81,6 +81,7 @@ const theme_def_t *theme_def_find(const char *name);   /* theme_defs.c */
 /* theme d's face for font role r as a copy in caller storage (tf; ft = TTC step) with the international/CJK fallback
  * attached, whether or not d is active. NULL = d has no such face. */
 const lv_font_t *theme_font_chain(const theme_def_t *d, int r, lv_font_t *tf, lv_font_t *ft);
+void        theme_slider_track(lv_obj_t *sl);     /* the visible grey track every slider uses (redesign) */
 void        theme_settings_switch(lv_obj_t *sw); /* shared round Settings control, protected from kit restyling */
 void        theme_list_row(lv_obj_t *row);         /* call after a list row is filled: flat style + accent chevrons */
 char       *theme_lower(char *dst, int cap, const char *src);   /* as theme_upper, lower-cased */

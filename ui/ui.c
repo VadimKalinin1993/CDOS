@@ -442,7 +442,6 @@ int ui_np_seek_press(int x, int y){
     if(btn_mode && !lv_obj_has_flag(btn_mode, LV_OBJ_FLAG_HIDDEN) &&
        lv_obj_hit_test(btn_mode, &p)) return 0;
     if(y < 40) return 0;                          /* top drawer zone */
-    if(y >= HOME_SWIPE_Y) return 0;               /* bottom edge band: the Home swipe starts here, never a seek */
     if(ui_receiver_active()) return 0;                                    /* nothing to seek */
     if(g_track_dur <= 0 && g_seek_available) return 0;
     if(!seek_on_band(x, y, 34)) return 0;         /* not on the ring (grab band) */
@@ -682,6 +681,42 @@ static void fsart_click_cb(lv_event_t *e){
     if(lv_event_get_code(e)==LV_EVENT_CLICKED) ui_np_fsart_close();
 }
 
+/* ---- Vinyl mode: the cover grows from its place to the full screen, then the Vinyl saver takes over ---- */
+static int g_np_small_valid, g_np_cover_loading;   /* (defined with the art state below) */
+static lv_image_dsc_t g_coverdsc;
+static lv_obj_t *g_zoom;
+static void np_vinyl_zoom_done(lv_anim_t *a){
+    (void)a;
+    if(g_zoom){ lv_obj_delete(g_zoom); g_zoom = NULL; }
+    if(screen_current() == SCR_NOWPLAYING && g_np_have) saver_open_vinyl();
+}
+static void np_vinyl_zoom_cb(void *o, int32_t v){   /* v: 0..1000 */
+    lv_obj_t *img = o;
+    lv_area_t a; lv_obj_get_coords(cover, &a);
+    int cx0 = (a.x1 + a.x2) / 2, cy0 = (a.y1 + a.y2) / 2;
+    lv_image_set_scale(img, 256 + (623 - 256) * v / 1000);   /* 148 px -> 360 px */
+    lv_obj_set_pos(img, cx0 + (180 - cx0) * v / 1000 - COVER_D / 2, cy0 + (180 - cy0) * v / 1000 - COVER_D / 2);
+}
+static void np_vinyl_open(void){
+    if(!g_np_have || g_zoom) return;
+    sharp_cover_request();                                   /* the saver's 360 px cover starts decoding now */
+    if(!(g_np_small_valid && coverdsc_valid)){ saver_open_vinyl(); return; }   /* no RAM cover to zoom: open at once */
+    g_zoom = lv_image_create(lv_layer_top());
+    lv_image_set_src(g_zoom, &g_coverdsc);
+    lv_obj_set_size(g_zoom, COVER_D, COVER_D);
+    lv_image_set_pivot(g_zoom, COVER_D / 2, COVER_D / 2);
+    lv_obj_remove_flag(g_zoom, LV_OBJ_FLAG_CLICKABLE);
+    np_vinyl_zoom_cb(g_zoom, 0);
+    lv_anim_t an; lv_anim_init(&an);
+    lv_anim_set_var(&an, g_zoom);
+    lv_anim_set_exec_cb(&an, np_vinyl_zoom_cb);
+    lv_anim_set_values(&an, 0, 1000);
+    lv_anim_set_duration(&an, 320);
+    lv_anim_set_path_cb(&an, lv_anim_path_ease_out);
+    lv_anim_set_completed_cb(&an, np_vinyl_zoom_done);
+    lv_anim_start(&an);
+}
+
 static void cover_click_cb(lv_event_t *e)
 {
     if(ui_receiver_active()) return;
@@ -690,10 +725,8 @@ static void cover_click_cb(lv_event_t *e)
     if(code == LV_EVENT_PRESSED) {
         if(id){ lv_point_t p; lv_indev_get_point(id, &p); g_cover_px = p.x; g_cover_py = p.y; }
     }
-    /* Cover-tap no longer opens full-screen art (removed per product decision - the
-     * vinyl screensaver is the album-art showcase; full-screen art stays available via
-     * Options -> Full-screen Art). The PRESSED tracking above + main.c's cover-tap
-     * seek-skip remain so a tap on the cover can't accidentally seek. */
+    /* Redesign: a tap on the cover zooms it to the full screen and opens Vinyl mode (the spinning cover). */
+    if(code == LV_EVENT_CLICKED && ui_press_travel() <= 16) np_vinyl_open();
 }
 static void make_clickable(lv_obj_t *o, const char *cmd)
 {
@@ -3534,6 +3567,13 @@ void ui_create(lv_obj_t *root)
         theme_kit()->nowplaying(&np);
     }
     g_album_hid = lv_obj_has_flag(album, LV_OBJ_FLAG_HIDDEN);   /* a theme that hides the album line shows it only while beaming */
+    {   /* redesign: no Favourite heart, Play Mode or Beam on Now Playing. Parked in a hidden holder, so whatever shows
+         * them per track keeps working and nothing is drawn or tappable. */
+        lv_obj_t *park = lv_obj_create(scr);
+        lv_obj_remove_style_all(park);
+        lv_obj_add_flag(park, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_parent(btn_fav, park); lv_obj_set_parent(btn_mode, park); lv_obj_set_parent(btn_beam, park);
+    }
 
     /* ---- full-screen album-art overlay (hidden until the cover is tapped) ---- */
     fsart = lv_obj_create(scr);

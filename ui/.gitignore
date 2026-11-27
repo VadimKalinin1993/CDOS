@@ -28,3 +28,7 @@ tests/playstate_test
 # UI and FreeType build products
 mq_ui
 third_party/out/
+
+# CDOS: build outputs of the helpers (the decoder links against FiiO libraries - never commit)
+diskos-artdec
+diskos-audiodec
