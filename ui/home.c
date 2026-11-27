@@ -42,6 +42,7 @@ static lv_obj_t *g_np_state;
 /* the redesigned Default Home (home_create_v2): status icons, clock, the playing track as the centre, Library + Settings */
 static int g_v2;
 static lv_obj_t *g_st_wifi, *g_st_bt, *g_st_chg, *g_st_batt, *g_st_batt_body, *g_st_batt_cap, *g_st_batt_lbl;
+static lv_obj_t *g_st_batt_halo[8];   /* CDOS: the percent's dark outline (8 offset copies under it) */
 static lv_obj_t *g_np_arc;   /* playback progress around the cover */
 static void home_pp_glyph(lv_obj_t *label, int playing){
     if(!label) return;
@@ -326,10 +327,11 @@ void home_set_status(int batt, int charging, int wifi, int bt)
         lv_obj_remove_flag(g_st_batt, LV_OBJ_FLAG_HIDDEN);
         char b[8]; lv_snprintf(b, sizeof b, "%d", batt);
         ui_label_set_changed(g_st_batt_lbl, b);
-        lv_color_t c = (batt <= 15 && !charging) ? TC(STATUS_DANGER) : TC(TEXT_SECONDARY);
-        lv_obj_set_style_border_color(g_st_batt_body, c, 0);
-        lv_obj_set_style_bg_color(g_st_batt_cap, c, 0);
-        lv_obj_set_style_text_color(g_st_batt_lbl, c, 0);
+        for(int k = 0; k < 8; k++) ui_label_set_changed(g_st_batt_halo[k], b);
+        int low = batt <= 15 && !charging;
+        lv_obj_set_style_border_color(g_st_batt_body, low ? TC(STATUS_DANGER) : TC(TEXT_MUTED), 0);
+        lv_obj_set_style_bg_color(g_st_batt_cap, low ? TC(STATUS_DANGER) : TC(TEXT_MUTED), 0);
+        lv_obj_set_style_text_color(g_st_batt_lbl, low ? TC(STATUS_DANGER) : TC(TEXT_PRIMARY), 0);
         return;
     }
     if (!g_status) return;
@@ -561,23 +563,33 @@ static void home_create_v2(lv_obj_t *root)
     lv_obj_add_flag(g_st_chg, LV_OBJ_FLAG_HIDDEN);
     g_st_batt = lv_obj_create(g_status);
     lv_obj_remove_style_all(g_st_batt);
-    lv_obj_set_size(g_st_batt, 31, 16);
+    lv_obj_set_size(g_st_batt, 36, 20);
     lv_obj_clear_flag(g_st_batt, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    /* CDOS (owner 2026-11-27): big, readable digits drawn OVER a quieter battery outline, with a 1 px dark halo */
     g_st_batt_body = lv_obj_create(g_st_batt);
     lv_obj_remove_style_all(g_st_batt_body);
-    lv_obj_set_pos(g_st_batt_body, 0, 0); lv_obj_set_size(g_st_batt_body, 28, 16);
+    lv_obj_set_pos(g_st_batt_body, 0, 2); lv_obj_set_size(g_st_batt_body, 32, 16);
     lv_obj_set_style_radius(g_st_batt_body, 4, 0);
-    lv_obj_set_style_border_width(g_st_batt_body, 2, 0);   /* Lucide's stroke at 16-20 px */
-    lv_obj_set_style_border_color(g_st_batt_body, TC(TEXT_SECONDARY), 0);
+    lv_obj_set_style_border_width(g_st_batt_body, 2, 0);
+    lv_obj_set_style_border_color(g_st_batt_body, TC(TEXT_MUTED), 0);
     lv_obj_clear_flag(g_st_batt_body, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
     g_st_batt_cap = lv_obj_create(g_st_batt);
     lv_obj_remove_style_all(g_st_batt_cap);
-    lv_obj_set_pos(g_st_batt_cap, 29, 5); lv_obj_set_size(g_st_batt_cap, 2, 6);
+    lv_obj_set_pos(g_st_batt_cap, 33, 7); lv_obj_set_size(g_st_batt_cap, 2, 6);
     lv_obj_set_style_radius(g_st_batt_cap, 1, 0);
     lv_obj_set_style_bg_opa(g_st_batt_cap, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(g_st_batt_cap, TC(TEXT_SECONDARY), 0);
-    g_st_batt_lbl = v2_icon(g_st_batt_body, "", TF(UI_10), TC(TEXT_SECONDARY));
-    lv_obj_center(g_st_batt_lbl);
+    lv_obj_set_style_bg_color(g_st_batt_cap, TC(TEXT_MUTED), 0);
+    static const signed char HALO[8][2] = { {-1,-1},{0,-1},{1,-1},{-1,0},{1,0},{-1,1},{0,1},{1,1} };
+    for(int k = 0; k < 8; k++){
+        g_st_batt_halo[k] = v2_icon(g_st_batt, "", TF(UI_16), TC(CANVAS));
+        lv_obj_set_width(g_st_batt_halo[k], 36);
+        lv_obj_set_style_text_align(g_st_batt_halo[k], LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(g_st_batt_halo[k], LV_ALIGN_CENTER, -2 + HALO[k][0], HALO[k][1]);
+    }
+    g_st_batt_lbl = v2_icon(g_st_batt, "", TF(UI_16), TC(TEXT_PRIMARY));
+    lv_obj_set_width(g_st_batt_lbl, 36);
+    lv_obj_set_style_text_align(g_st_batt_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(g_st_batt_lbl, LV_ALIGN_CENTER, -2, 0);
     lv_obj_add_flag(g_st_batt, LV_OBJ_FLAG_HIDDEN);
 
     g_clock = make_label(root, "--:--", TF(UI_28), TC(TEXT_PRIMARY));

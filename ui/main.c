@@ -1965,9 +1965,7 @@ static void localplayer_workmode_cb(lv_timer_t *t){
 }
 void ui_rescan_library(void){
     if(scanner_active()){   /* CDOS: a second tap never cancels (it was easy to stop a scan by accident) - it shows progress */
-        int done = 0, total = 0; scanner_progress(&done, &total);
-        char b[64]; snprintf(b, sizeof b, done > 0 ? "Scanning library... %d files" : "Scanning library...", done);
-        ui_toast(b);
+        ui_toast("Already scanning - see the progress below");   /* the pill shows the count */
         return;
     }
     if(!ui_local_playback_allowed()){ ui_toast("Return to local playback to scan"); return; }
@@ -2022,6 +2020,15 @@ static void library_poll_changes(void){
     g_library_reload = g_library_check = 0;
     if(changed || recovering) library_refresh_views();
     mdb_ui_read_end();
+}
+/* CDOS: keep the bottom "Scanning library  N" pill in step with the scanner (any start: Rescan, auto, first boot) */
+static void scan_pill_tick(lv_timer_t *t){
+    (void)t;
+    static int was;
+    int done = 0, total = 0, on = scanner_active();
+    if(on) scanner_progress(&done, &total);
+    if(on || was) ui_scan_pill(on, done);   /* idle: nothing to do */
+    was = on;
 }
 static void scanner_poll(lv_timer_t *t){
     (void)t;
@@ -5018,6 +5025,7 @@ int main(int argc, char **argv){
     g_t_storage = lv_timer_create(storage_tick, 100, NULL);
     { void system_ota_health_init(void); system_ota_health_init();
       void system_ota_auto_init(void); system_ota_auto_init(); }   /* system.c: proves a trial OTA build healthy after 15 s */
+    lv_timer_create(scan_pill_tick, 400, NULL);   /* CDOS: scan progress pill */
     if(getenv("DISKOS_THEME_RELOAD")) unsetenv("DISKOS_THEME_RELOAD");   /* a theme re-launch: no boot splash */
     else splash_start();
     /* Init is complete. Force the FIRST FRAME to actually paint (lv_refr_now flushes

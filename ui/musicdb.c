@@ -1100,6 +1100,49 @@ int mdb_paths_plan(const char *const *paths, int npaths, mdb_plan_t *plan){
     return 1;
 }
 
+/* CDOS Random: the folder of a random library song (an album = a folder). 1 found, 0 empty library, -1 error. */
+int mdb_random_song_dir(char *dir, int n){
+    sqlite3 *d = db(); if(!d || !dir || n <= 0) return -1;
+    sqlite3_stmt *st; int r = -1;
+    if(sqlite3_prepare_v2(d, "SELECT PATH FROM SONG WHERE COALESCE(IS_CUE,0)=0 AND COALESCE(IS_ISO,0)=0 "
+                             "ORDER BY RANDOM() LIMIT 1;", -1, &st, NULL) != SQLITE_OK) return -1;
+    int rc = sqlite3_step(st);
+    if(rc == SQLITE_ROW){
+        const char *p = (const char *)sqlite3_column_text(st, 0);
+        const char *sl = p ? strrchr(p, '/') : NULL;
+        if(sl && sl > p && (int)(sl - p) < n){ memcpy(dir, p, (size_t)(sl - p)); dir[sl - p] = 0; r = 1; }
+    } else if(rc == SQLITE_DONE) r = 0;
+    sqlite3_finalize(st);
+    return r;
+}
+/* CDOS: the library songs directly inside `dir` (not in subfolders), as malloc'd paths in *out (free each, then the
+ * array). Returns the count, 0 none, -1 error. A range on PATH (dir/ .. dir0) keeps names with % or _ literal. */
+int mdb_dir_song_paths(const char *dir, char ***out){
+    *out = NULL;
+    sqlite3 *d = db(); if(!d || !dir) return -1;
+    size_t dl = strlen(dir);
+    char *lo = malloc(dl + 2), *hi = malloc(dl + 2);
+    if(!lo || !hi){ free(lo); free(hi); return -1; }
+    memcpy(lo, dir, dl); lo[dl] = '/'; lo[dl + 1] = 0;
+    memcpy(hi, dir, dl); hi[dl] = '0'; hi[dl + 1] = 0;          /* '0' is the byte after '/' */
+    sqlite3_stmt *st; int n = 0, cap = 0; char **v = NULL;
+    if(sqlite3_prepare_v2(d, "SELECT PATH FROM SONG WHERE PATH>=?1 AND PATH<?2 AND COALESCE(IS_CUE,0)=0 AND COALESCE(IS_ISO,0)=0;",
+                          -1, &st, NULL) != SQLITE_OK){ free(lo); free(hi); return -1; }
+    sqlite3_bind_text(st, 1, lo, -1, SQLITE_STATIC); sqlite3_bind_text(st, 2, hi, -1, SQLITE_STATIC);
+    int rc;
+    while((rc = sqlite3_step(st)) == SQLITE_ROW){
+        const char *p = (const char *)sqlite3_column_text(st, 0);
+        if(!p || strchr(p + dl + 1, '/')) continue;              /* a song in a subfolder */
+        if(n == cap){ char **nv = realloc(v, (size_t)(cap = cap ? cap * 2 : 16) * sizeof *v); if(!nv) break; v = nv; }
+        if(!(v[n] = strdup(p))) break;
+        n++;
+    }
+    sqlite3_finalize(st); free(lo); free(hi);
+    if(rc != SQLITE_DONE){ for(int i = 0; i < n; i++) free(v[i]); free(v); return -1; }
+    *out = v;
+    return n;
+}
+
 typedef struct { const char *p, *skip; int after; } mdb_artist_iter;
 static int mdb_artist_space(unsigned char c){ return c==' ' || c=='\t' || c=='\r' || c=='\n'; }
 static int mdb_feature_len(const char *p){

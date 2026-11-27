@@ -23,6 +23,7 @@ int  screen_anim_on(void);   /* the Animations setting as the screen manager app
 void screen_set_anim(int on);
 int  screen_current(void);
 void ui_toast(const char *msg);
+void ui_scan_pill(int active, int done);   /* CDOS: the bottom progress pill while a library scan runs (toast.c) */
 void ui_clock_text_ago(uint64_t age_ms, char *out, int cap);   /* time of day age_ms ago, clock format */
 void splash_start(void);
 /* the "something" block-matrix clock (home.c): handle 0 = Home, 1 = screensaver */
@@ -119,6 +120,7 @@ int  ui_source_switch_failed(void);
 int ui_local_playback_allowed(void);
 int  ui_detect_source_mode(void);          /* M17: the ACTUAL mode from the USB gadget state (0/1/3; BT reads as 0) */
 void npmenu_set(const track_state_t *st, int playing, const void *thumb_src);
+const char *npmenu_current_path(void);   /* CDOS: the loaded song's file, "" if none */
 void npmenu_close_transients(void);   /* dismiss lv_layer_top popups on navigation */
 int ui_set_favorite(int on);    /* love/unlove the current song (0104); 0 = refused (casting), nothing sent and the caller must not flip or toast */
 /* add-to-playlist picker (npmenus.c) */
@@ -284,6 +286,7 @@ void ui_cancel_book_resume(void);                      /* end the book session (
 void ui_book_user_seeked(long target_ms);              /* manual seek in a book: drop pending resume, persist target_ms to the bookmark now, keep session */
 int  ui_set_volume(int vol);   /* set absolute volume 0..VOL_MAX; returns 0=queued, -1=failed */
 void ui_set_workmode(int mode);
+int  ui_set_folder_jump(int on);   /* 0687 Play Through Folders; CDOS keeps it off (main.c) */
 int ui_apply_eq(int preset);
 int ui_eq_select(int preset);    /* central EQ apply+persist (eq_preset + eq_last); 0 ok, -1 send failed */
 int ui_view_playing(void);       /* 15a: the play state Now Playing / Home / saver draw (facade while casting, else ui_is_playing()) */

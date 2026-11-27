@@ -40,6 +40,8 @@ static void fav_refresh(void){   /* every playback update: the text only when it
     if(cast && row && dim_row != row){ lv_obj_set_style_opa(row, LV_OPA_50, 0); dim_row = row; }
     else if(!cast && dim_row){ if(dim_row == row) lv_obj_set_style_opa(row, LV_OPA_COVER, 0); dim_row = NULL; }
 }
+/* CDOS: the current song's file ("" when nothing is loaded) - Library opens the player instead of restarting it */
+const char *npmenu_current_path(void){ return g_have ? g_path : ""; }
 void npmenu_set(const track_state_t *st, int playing, const void *thumb_src){
     (void)playing; (void)thumb_src;
     g_have = st && st->have_track;

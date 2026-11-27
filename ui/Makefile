@@ -49,6 +49,10 @@ SQLITE_FLAGS := -Os -pipe -static -ffunction-sections -fdata-sections -DSQLITE_T
   -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_DQS=0 -DSQLITE_OMIT_DEPRECATED $(REPRO_FLAGS) $(FP_FLAGS)
 OBJS := $(patsubst $(TLS_DIR)/%.o,$(DEP_OUT)/$(TLS_ARCH)/objects/%.o,$(LVGL_SRCS:.c=.o) $(APP_SRCS:.c=.o) $(APP)/sqlite3.o)
 
+# CDOS: LVGL's software renderer (blending, fills, images, text, masks) is built for speed (-O2, the last -O wins):
+# its per-pixel loops run every frame while lists scroll and animations play. Everything else stays -Os.
+$(LVGL)/src/draw/%.o: CFLAGS += -O2
+
 # Optional isolated objects for scratch builds of the same production target.
 ifneq ($(strip $(OBJECT_OUT)),)
 OBJS := $(patsubst $(NUI)/%.c,$(OBJECT_OUT)/%.o,$(LVGL_SRCS) $(APP_SRCS) $(APP)/sqlite3.c)

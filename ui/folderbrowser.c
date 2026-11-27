@@ -106,12 +106,39 @@ static int fb_is_audio(const char *name){
         || fb_has_ext(name, ".opus") || fb_has_ext(name, ".oga");
 }
 
-/* folders first, then files; case-insensitive within each group. */
+/* CDOS: one UTF-8 code point (bad bytes read as themselves); *s advances */
+static unsigned fb_utf8_next(const unsigned char **s){
+    const unsigned char *p = *s; unsigned c = *p;
+    int n = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 0;
+    for(int i = 1; i <= n; i++) if((p[i] & 0xC0) != 0x80){ n = 0; break; }
+    if(n){ c &= 0x3F >> n; for(int i = 1; i <= n; i++) c = (c << 6) | (p[i] & 0x3F); }
+    *s = p + 1 + n;
+    return c;
+}
+/* lower-case Latin and Cyrillic, doubled so that ё sorts right after е (the Russian order) */
+static unsigned fb_fold(unsigned c){
+    if(c >= 'A' && c <= 'Z') c += 32;
+    else if(c >= 0x410 && c <= 0x42F) c += 32;                        /* А-Я */
+    else if(c >= 0x400 && c <= 0x40F) c += 80;                        /* Ё, Є, І ... */
+    if(c == 0x451) return 0x435 * 2 + 1;                              /* ё */
+    return c * 2;
+}
+/* folders first, then files; within each group case-insensitive for Latin and Cyrillic (strcasecmp folds only ASCII,
+ * which put "Битлз" before "аквариум") */
+static int fb_name_cmp(const char *a, const char *b){
+    const unsigned char *p = (const unsigned char *)a, *q = (const unsigned char *)b;
+    while(*p && *q){
+        unsigned u = fb_fold(fb_utf8_next(&p)), v = fb_fold(fb_utf8_next(&q));
+        if(u != v) return u < v ? -1 : 1;
+    }
+    return (*p != 0) - (*q != 0);
+}
 static int fb_cmp(const void *a, const void *b){
     const fb_entry_t *x = a, *y = b;
     if(x->is_dir != y->is_dir) return y->is_dir - x->is_dir;   /* dir(1) sorts before file(0) */
-    return strcasecmp(x->name, y->name);
+    return fb_name_cmp(x->name, y->name);
 }
+static int fb_path_cmp(const void *a, const void *b){ return fb_name_cmp(*(char *const *)a, *(char *const *)b); }
 
 static void fb_fill_stop(void){ row_pool_clear(&g_rows); }
 
@@ -369,10 +396,12 @@ static void fb_bind(row_slot_t *s, int fresh){
     theme_list_row(r);
 }
 
-static int fb_is_mark(const char *name){
+static int fb_is_mark_path(const char *m, const char *name){
     size_t n = strlen(g_dir);
-    return g_mark[0] && !strncmp(g_mark, g_dir, n) && g_mark[n] == '/' && !strcmp(g_mark + n + 1, name);
+    return m[0] && !strncmp(m, g_dir, n) && m[n] == '/' && !strcmp(m + n + 1, name);
 }
+/* the song marked by Go to Album, or (CDOS) the song currently loaded in the player */
+static int fb_is_mark(const char *name){ return fb_is_mark_path(g_mark, name) || fb_is_mark_path(npmenu_current_path(), name); }
 static void fb_rebuild(void){
     fb_fill_stop();
     if(g_title){
@@ -427,6 +456,11 @@ static void fb_ascend(void){
 
 /* Redesign: the folder is the album - the tapped song plays with the folder's other songs as the queue (the list's order),
  * so the album ends where the folder ends. Falls back to the all-songs play when the folder's queue can't be built. */
+/* CDOS: a library scan holds the database for minutes; a queue can't be written then (and the old fallback played the
+ * whole library instead). Say why. */
+static void fb_busy_toast(void){
+    ui_toast(scanner_active() ? "Library is updating - try again when it finishes" : "Library busy - try again");
+}
 static int fb_play_folder(const char *full){
     int na = 0;
     for(int i = 0; i < g_nent; i++) na += !g_ent[i].is_dir && g_ent[i].kind == FB_K_AUDIO;
@@ -441,12 +475,16 @@ static int fb_play_folder(const char *full){
             if(n > 0 && n < FB_MAXPATH){ pp[k] = paths[k]; k++; }
         }
         mdb_plan_t plan;
-        if(k > 0 && mdb_ui_read_begin()){
+        if(k > 0 && !mdb_ui_read_begin()) ok = -2;   /* CDOS: the library is busy (a scan): never fall back to all songs */
+        else if(k > 0){
             int built = mdb_paths_plan(pp, k, &plan);
             int id = built > 0 ? mdb_song_id_by_path(full) : 0;
             mdb_ui_read_end();
             if(built > 0){
-                if(id > 0 && mdb_plan_pos(&plan, id) > 0) ok = ui_play_plan(&plan, id) ? 1 : -1;
+                if(id > 0 && mdb_plan_pos(&plan, id) > 0){
+                    ui_set_folder_jump(0);   /* CDOS: an album ends in silence - never into the next folder */
+                    ok = ui_play_plan(&plan, id) ? 1 : -1;
+                }
                 mdb_plan_free(&plan);
             }
         }
@@ -458,17 +496,34 @@ static void fb_play(const char *name){
     char full[FB_MAXPATH];
     int n = snprintf(full, sizeof full, "%s/%s", g_dir, name);
     if(n <= 0 || n >= (int)sizeof full){ ui_toast("Path too long"); return; }
+    if(!strcmp(full, npmenu_current_path())){ screen_show(SCR_NOWPLAYING); return; }   /* CDOS: the song already loaded: just open it */
     int r = fb_play_folder(full);
+    fprintf(stderr, "cdos play: folder queue %s -> %d\n", full, r);
     if(r > 0){ screen_show(SCR_NOWPLAYING); return; }
+    if(r == -2){ fb_busy_toast(); return; }
     if(r < 0) return;                  /* refused: ui_play_plan toasted */
-    if(ui_play_song_by_path(full))     /* not queueable as a folder: the song alone, as before (toasts "Not in library") */
+    /* CDOS: not queueable as a folder - the song ALONE (then silence), never the all-songs queue that ran on into
+     * other albums. A song the library doesn't know goes to ui_play_song_by_path, which says so and rescans. */
+    {   const char *one[1] = { full }; mdb_plan_t plan; int built = 0, id = 0;
+        if(!mdb_ui_read_begin()){ fb_busy_toast(); return; }
+        built = mdb_paths_plan(one, 1, &plan); id = built > 0 ? mdb_song_id_by_path(full) : 0; mdb_ui_read_end();
+        fprintf(stderr, "cdos play: single song -> built %d id %d\n", built, id);
+        if(built < 0){ fb_busy_toast(); return; }
+        if(built > 0){
+            int ok = id > 0 && (ui_set_folder_jump(0), ui_play_plan(&plan, id));
+            mdb_plan_free(&plan);
+            if(ok) screen_show(SCR_NOWPLAYING);
+            if(id > 0) return;
+        }
+    }
+    if(ui_play_song_by_path(full))
         screen_show(SCR_NOWPLAYING);
 }
 
 /* Play the CUE/ISO tracks of `paths` (their SONG rows, TRACK order) through the exact queue the album drill uses. */
 static void fb_play_tracks(const char *const *paths, int n){
     mdb_plan_t plan;
-    if(!mdb_ui_read_begin()){ ui_toast("Library busy - try again"); return; }
+    if(!mdb_ui_read_begin()){ fb_busy_toast(); return; }
     int found=mdb_subtrack_plan(paths,n,&plan);
     mdb_ui_read_end();
     if(found<=0){ ui_toast(found<0 ? "Library busy - try again" : "Not in library"); return; }
@@ -493,7 +548,7 @@ static void fb_play_sheet(const char *name){
     int np = 0;
     g_cue_failed=0;
     if(sd_io_begin()){ np = scan_cue_files(full, g_cue_paths, FB_CUE_FILES, fb_cue_seen); sd_io_end(); }
-    if(g_cue_failed){ ui_toast("Library busy - try again"); return; }
+    if(g_cue_failed){ fb_busy_toast(); return; }
     const char *paths[FB_CUE_FILES];
     for(int i = 0; i < np; i++) paths[i] = g_cue_paths[i];
     fb_play_tracks(paths, np);   /* np == 0: "Not in library" */
@@ -517,31 +572,113 @@ static void fb_row_cb(lv_event_t *e){
     else           fb_play(en->name);
 }
 
-static void fb_search_cb(lv_event_t *e){ if(lv_event_get_code(e) == LV_EVENT_CLICKED) screen_show(SCR_SEARCH); }
+/* ---- CDOS: the search icon opens a grid of big letters; a tap jumps the list to the first name on that letter ---- */
+static lv_obj_t *g_letters;          /* the open letter grid (a layer over this screen), NULL when closed */
+static unsigned g_letter_cp[64];     /* the letters on the grid, as upper-case code points ('#' = digits/other) */
+/* the letter a name files under: Latin A-Z, Cyrillic А-Я (Ё under Е), anything else '#' */
+static unsigned fb_letter(const char *name){
+    const unsigned char *p = (const unsigned char *)name;
+    unsigned c = fb_utf8_next(&p);
+    if(c >= 'a' && c <= 'z') c -= 32;
+    if(c >= 'A' && c <= 'Z') return c;
+    if(c >= 0x430 && c <= 0x44F) c -= 32;
+    if(c == 0x401 || c == 0x451) return 0x415;
+    if(c >= 0x410 && c <= 0x42F) return c;
+    return '#';
+}
+static void fb_letters_close(void){ if(g_letters){ lv_obj_delete_async(g_letters); g_letters = NULL; } }
+static void fb_letters_back_cb(lv_event_t *e){ if(lv_event_get_code(e) == LV_EVENT_CLICKED) fb_letters_close(); }
+static void fb_letter_cb(lv_event_t *e){
+    if(lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    unsigned L = g_letter_cp[(int)(intptr_t)lv_event_get_user_data(e)];
+    fb_letters_close();
+    for(int i = 0; i < g_nent; i++) if(fb_letter(g_ent[i].name) == L){
+        int top = strcmp(g_dir, FB_ROOT) == 0 ? FB_RANDOM_TOP : 0;
+        lv_obj_update_layout(g_list);
+        lv_obj_scroll_to_y(g_list, top + i * (FB_ROW_H + FB_ROW_GAP), LV_ANIM_OFF);   /* clamped at the list's end */
+        row_pool_update(&g_rows);
+        return;
+    }
+}
+static int fb_ucmp(const void *a, const void *b){ unsigned x = *(const unsigned *)a, y = *(const unsigned *)b; return (x > y) - (x < y); }
+static void fb_search_cb(lv_event_t *e){
+    if(lv_event_get_code(e) != LV_EVENT_CLICKED || g_letters || !g_list) return;
+    int n = 0;
+    for(int i = 0; i < g_nent && n < (int)(sizeof g_letter_cp / sizeof g_letter_cp[0]); i++){
+        unsigned L = fb_letter(g_ent[i].name); int seen = 0;
+        for(int k = 0; k < n; k++) if(g_letter_cp[k] == L){ seen = 1; break; }
+        if(!seen) g_letter_cp[n++] = L;
+    }
+    if(n == 0) return;
+    qsort(g_letter_cp, n, sizeof g_letter_cp[0], fb_ucmp);   /* '#' first, then A-Z, then А-Я: the list's own order */
+    lv_obj_t *root = lv_obj_get_parent(g_list);
+    g_letters = lv_obj_create(root);
+    lv_obj_remove_style_all(g_letters);
+    lv_obj_set_size(g_letters, 360, 360);
+    lv_obj_set_style_bg_color(g_letters, TC(CANVAS), 0);
+    lv_obj_set_style_bg_opa(g_letters, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(g_letters, LV_OBJ_FLAG_SCROLLABLE);
+    ui_header_cb(g_letters, "Go to letter", fb_letters_back_cb);
+    lv_obj_t *grid = lv_obj_create(g_letters);
+    lv_obj_remove_style_all(grid);
+    lv_obj_set_pos(grid, 46, 72); lv_obj_set_size(grid, 268, 288);   /* 4 columns of 62 + 6 gaps */
+    lv_obj_set_style_pad_bottom(grid, 44, 0);
+    lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_style_pad_row(grid, 6, 0); lv_obj_set_style_pad_column(grid, 6, 0);
+    lv_obj_set_scroll_dir(grid, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(grid, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_add_flag(grid, LV_OBJ_FLAG_SCROLL_MOMENTUM);
+    for(int k = 0; k < n; k++){
+        lv_obj_t *b = lv_button_create(grid);
+        lv_obj_remove_style_all(b);
+        lv_obj_set_size(b, 62, 58);
+        lv_obj_set_style_radius(b, 14, 0);
+        lv_obj_set_style_bg_color(b, TC(SURFACE), 0);
+        lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(b, TC(LIST_PRESSED), LV_STATE_PRESSED);
+        ui_on(b, fb_letter_cb, LV_EVENT_CLICKED, (void *)(intptr_t)k, "library.letter", UI_CORE);
+        char t[8]; unsigned c = g_letter_cp[k];
+        if(c < 0x80){ t[0] = (char)c; t[1] = 0; }
+        else { t[0] = (char)(0xC0 | (c >> 6)); t[1] = (char)(0x80 | (c & 0x3F)); t[2] = 0; }
+        lv_obj_t *l = lv_label_create(b);
+        lv_label_set_text(l, t);
+        lv_obj_set_style_text_font(l, ui_font_cjk(28), 0);   /* Cyrillic needs the user-text chain */
+        lv_obj_set_style_text_color(l, TC(TEXT_PRIMARY), 0);
+        lv_obj_center(l);
+    }
+}
 
-/* Play a random album of the library from its first track (the cover flow's play: album list, sequential). */
+/* CDOS Random: a random folder of the library (album = folder), from its first track, ending in silence. It used to
+ * pick an ALBUM tag, which mixed artists when tags were empty or shared. */
 static void fb_random_cb(lv_event_t *e){
     if(lv_event_get_code(e) != LV_EVENT_CLICKED) return;
-    if(!mdb_ui_read_begin()){ ui_toast("Library busy - try again"); return; }
-    int n = mdb_album_count();
-    if(n <= 0){ mdb_ui_read_end(); ui_toast(n < 0 ? "Out of memory" : "No albums found"); return; }
-    int k = rand() % n;
-    char (*names)[MDB_STR] = malloc((size_t)(k + 1) * MDB_STR), (*artists)[MDB_STR] = malloc((size_t)(k + 1) * MDB_STR);
-    int *counts = malloc((size_t)(k + 1) * sizeof(int));
-    char album[MDB_STR] = "";
-    if(names && artists && counts && mdb_albums(names, artists, counts, k + 1) == k + 1) snprintf(album, sizeof album, "%s", names[k]);
-    free(names); free(artists); free(counts);
+    if(!mdb_ui_read_begin()){ fb_busy_toast(); return; }
+    char dir[FB_MAXPATH]; char **v = NULL; int n = 0, built = 0;
+    mdb_plan_t plan;
+    int r = mdb_random_song_dir(dir, sizeof dir);
+    if(r > 0) n = mdb_dir_song_paths(dir, &v);
+    if(n > 0){
+        qsort(v, (size_t)n, sizeof *v, fb_path_cmp);          /* the folder's own order (as Library lists it) */
+        built = mdb_paths_plan((const char *const *)v, n, &plan);
+    }
     mdb_ui_read_end();
-    if(!album[0]){ ui_toast("Couldn't pick an album"); return; }
+    for(int i = 0; i < n; i++) free(v[i]);
+    free(v);
+    fprintf(stderr, "cdos random: %s (%d songs, plan %d)\n", r > 0 ? dir : "-", n, built);
+    if(r == 0){ ui_toast("No music found"); return; }
+    if(built <= 0){ { if(r < 0 || n < 0 || built < 0) fb_busy_toast(); else ui_toast("Couldn't pick an album"); }; return; }
     ui_set_workmode(0);                                     /* sequential: the album in its order */
-    if(ui_play_list(3, album, 1)) screen_show(SCR_NOWPLAYING);
+    ui_set_folder_jump(0);                                  /* and it ends in silence */
+    int ok = ui_play_plan(&plan, plan.ids[0]);
+    mdb_plan_free(&plan);
+    if(ok) screen_show(SCR_NOWPLAYING);
 }
 
 /* the SD root shows Search in the header (Random is the list's first item, fb_rebuild); a subfolder shows only Back */
 static void fb_root_chrome(int at_root){
-    if(!g_search_btn) return;
-    if(at_root) lv_obj_remove_flag(g_search_btn, LV_OBJ_FLAG_HIDDEN);
-    else        lv_obj_add_flag(g_search_btn, LV_OBJ_FLAG_HIDDEN);
+    (void)at_root;
+    fb_letters_close();   /* another folder: the letter grid belonged to the old one */
+    if(g_search_btn) lv_obj_remove_flag(g_search_btn, LV_OBJ_FLAG_HIDDEN);   /* CDOS: the letter jump in every folder */
 }
 static void fb_list_clean(void){ if(g_list){ row_pool_clear(&g_rows); lv_obj_clean(g_list); } g_random_btn = NULL; }
 /* Random (the Home Library pill's style): the SD root list's first item, so it scrolls away with the folders */
@@ -588,7 +725,7 @@ void folderbrowser_create(lv_obj_t *root){
     lv_obj_set_style_radius(g_search_btn, 20, 0);
     lv_obj_set_style_bg_color(g_search_btn, TC(LIST_PRESSED), LV_STATE_PRESSED);
     lv_obj_set_style_bg_opa(g_search_btn, LV_OPA_70, LV_STATE_PRESSED);
-    ui_on(g_search_btn, fb_search_cb, LV_EVENT_CLICKED, NULL, "library.search", UI_CORE);
+    ui_on(g_search_btn, fb_search_cb, LV_EVENT_CLICKED, NULL, "library.letters", UI_CORE);
     {   lv_obj_t *ic = lv_label_create(g_search_btn);
         lv_label_set_text(ic, ICON_SEARCH);
         lv_obj_set_style_text_font(ic, &font_lucide_20, 0);
@@ -613,7 +750,7 @@ void folderbrowser_create(lv_obj_t *root){
     fb_root_chrome(1);
 }
 
-void folderbrowser_back(void){ fb_ascend(); }
+void folderbrowser_back(void){ if(g_letters){ fb_letters_close(); return; } fb_ascend(); }
 /* Library at the folder of `file` (a path under the SD card), that file marked; Back walks up from there */
 void folderbrowser_open_at(const char *file){
     const char *slash = file ? strrchr(file, '/') : NULL;

@@ -102,6 +102,8 @@ int  mdb_plan_pos(const mdb_plan_t *plan, int song_id);                         
 void mdb_plan_free(mdb_plan_t *plan);
 int  mdb_subtrack_count(const char *path, int iso_only);   /* CUE/ISO count; -1 = retry (iso_only: IS_ISO rows only) */
 int  mdb_paths_plan(const char *const *paths, int npaths, mdb_plan_t *plan);      /* plain songs of these files, this order: type 5 (folder = album) */
+int  mdb_random_song_dir(char *dir, int n);           /* CDOS: a random song's folder; 1 / 0 empty / -1 */
+int  mdb_dir_song_paths(const char *dir, char ***out);  /* CDOS: songs directly in dir (malloc'd); count / -1 */
 int  mdb_subtrack_plan(const char *const *paths, int npaths, mdb_plan_t *plan);   /* type-5 plan, TRACK order; 1 built, 0 absent, -1 retry (caller frees built plan) */
 
 /* Up Next: the player's live queue from the current song on (read-only; the stock player owns it).

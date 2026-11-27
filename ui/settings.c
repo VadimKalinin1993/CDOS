@@ -670,7 +670,7 @@ void settings_apply_startup(int restore_brightness){
       mdb_set_artist_mode(ac == 1); }                   /* unknown -> by artist, as the player's queue can't be matched */
     { int fj = mdb_sysconfig_folder_jump();             /* the player's Play Through Folders switch (it owns it) */
       if(fj >= 0 && fj != cfg_get_int("folder_jump", 0)) cfg_set_int("folder_jump", fj);
-      if(fj == 1 && ui_set_folder_jump(0) == 0) cfg_set_int("folder_jump", 0); }   /* redesign: always off (an album ends) */
+      if(fj != 0 && ui_set_folder_jump(0) == 0) cfg_set_int("folder_jump", 0); }   /* CDOS: always off (an album ends), also when unreadable */
     power_startup_mirror();        /* the player's own Idle poweroff / Charging optimization values */
     controls_startup_mirror();     /* the player's Screen rotation and volume-key actions */
     cfg_set_int("sleep_idx", 0);   /* never auto-arm a sleep timer across reboots */
