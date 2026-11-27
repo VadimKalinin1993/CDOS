@@ -12,4 +12,5 @@ void folderbrowser_create(lv_obj_t *root);   /* build the screen once (from scre
 void folderbrowser_back(void);               /* up one folder; at the SD root, leave the screen */
 void folderbrowser_open(void);
 void folderbrowser_open_at(const char *file);   /* the file's folder, the file marked (Go to Album) */               /* reset to the SD root + show SCR_FOLDER */
+void folderbrowser_track_changed(void);   /* CDOS: re-mark the playing song */
 #endif

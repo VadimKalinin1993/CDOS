@@ -478,7 +478,7 @@ static int fb_play_folder(const char *full){
         if(k > 0 && !mdb_ui_read_begin()) ok = -2;   /* CDOS: the library is busy (a scan): never fall back to all songs */
         else if(k > 0){
             int built = mdb_paths_plan(pp, k, &plan);
-            int id = built > 0 ? mdb_song_id_by_path(full) : 0;
+            int id = built > 0 ? mdb_path_play_id(full) : 0;
             mdb_ui_read_end();
             if(built > 0){
                 if(id > 0 && mdb_plan_pos(&plan, id) > 0){
@@ -506,18 +506,20 @@ static void fb_play(const char *name){
      * other albums. A song the library doesn't know goes to ui_play_song_by_path, which says so and rescans. */
     {   const char *one[1] = { full }; mdb_plan_t plan; int built = 0, id = 0;
         if(!mdb_ui_read_begin()){ fb_busy_toast(); return; }
-        built = mdb_paths_plan(one, 1, &plan); id = built > 0 ? mdb_song_id_by_path(full) : 0; mdb_ui_read_end();
+        built = mdb_paths_plan(one, 1, &plan); id = mdb_path_play_id(full); mdb_ui_read_end();
         fprintf(stderr, "cdos play: single song -> built %d id %d\n", built, id);
         if(built < 0){ fb_busy_toast(); return; }
         if(built > 0){
             int ok = id > 0 && (ui_set_folder_jump(0), ui_play_plan(&plan, id));
             mdb_plan_free(&plan);
             if(ok) screen_show(SCR_NOWPLAYING);
-            if(id > 0) return;
+        }
+        if(id != 0){                                   /* indexed: never the whole-library queue */
+            if(built <= 0 || id < 0) ui_toast("Couldn't play this song");
+            return;
         }
     }
-    if(ui_play_song_by_path(full))
-        screen_show(SCR_NOWPLAYING);
+    ui_play_song_by_path(full);   /* not in the library: says so and rescans once (it plays nothing for an unknown song) */
 }
 
 /* Play the CUE/ISO tracks of `paths` (their SONG rows, TRACK order) through the exact queue the album drill uses. */
@@ -750,6 +752,21 @@ void folderbrowser_create(lv_obj_t *root){
     fb_root_chrome(1);
 }
 
+/* CDOS: the loaded song changed (main.c, every state update): re-bind the visible rows so its mark follows at once */
+void folderbrowser_track_changed(void){
+    static char last[FB_MAXPATH];
+    const char *cur = npmenu_current_path();
+    if(!strcmp(last, cur)) return;
+    snprintf(last, sizeof last, "%s", cur);
+    if(!g_list || !g_rows.slots) return;
+    for(int i = 0; i < g_rows.capacity; i++){
+        row_slot_t *sl = &g_rows.slots[i];
+        if(!sl->row || sl->index < 0 || sl->index >= g_nent) continue;
+        fb_bind(sl, 0);                                           /* as row_pool_update does: bind, place, style */
+        lv_obj_set_pos(sl->row, g_rows.x, g_rows.start + sl->index * g_rows.pitch);
+        row_slot_style(sl);
+    }
+}
 void folderbrowser_back(void){ if(g_letters){ fb_letters_close(); return; } fb_ascend(); }
 /* Library at the folder of `file` (a path under the SD card), that file marked; Back walks up from there */
 void folderbrowser_open_at(const char *file){

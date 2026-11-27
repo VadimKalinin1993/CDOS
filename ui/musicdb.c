@@ -1077,34 +1077,55 @@ int mdb_subtrack_plan(const char *const *paths, int npaths, mdb_plan_t *plan){
     return 1;
 }
 
-/* Redesign: a folder is the album. The plain (non CUE/ISO) songs of the given files, in the given order (the folder list's),
- * as an exact type-5 queue. 1 built, 0 none indexed, -1 retry (caller frees a built plan). */
+/* Redesign: a folder is the album. The songs of the given files, in the given order (the folder list's), as an exact
+ * type-5 queue: a file's plain row, or (CDOS) when it has none, its CUE/ISO rows in TRACK order - per-track FLACs next to
+ * a .cue sheet are indexed as CUE rows, and skipping them used to drop the whole folder into the all-songs queue.
+ * 1 built, 0 none indexed, -1 retry (caller frees a built plan). */
 int mdb_paths_plan(const char *const *paths, int npaths, mdb_plan_t *plan){
     if(!plan || !paths || npaths <= 0) return 0;
     memset(plan, 0, sizeof *plan);
     sqlite3 *d = db(); if(!d) return -1;
-    sqlite3_stmt *st;
+    sqlite3_stmt *st, *cue;
     if(sqlite3_prepare_v2(d, "SELECT ID FROM SONG WHERE PATH=?1 AND COALESCE(IS_CUE,0)=0 AND COALESCE(IS_ISO,0)=0 ORDER BY ID LIMIT 1;", -1, &st, NULL) != SQLITE_OK) return -1;
-    int *ids = malloc((size_t)npaths * sizeof *ids), n = 0;
-    if(!ids){ sqlite3_finalize(st); return -1; }
-    for(int i = 0; i < npaths; i++){
+    if(sqlite3_prepare_v2(d, "SELECT ID FROM SONG WHERE PATH=?1 AND (COALESCE(IS_CUE,0)=1 OR COALESCE(IS_ISO,0)=1) ORDER BY TRACK,ID;", -1, &cue, NULL) != SQLITE_OK){ sqlite3_finalize(st); return -1; }
+    int cap = npaths + 16, n = 0, bad = 0;
+    int *ids = malloc((size_t)cap * sizeof *ids);
+    for(int i = 0; ids && !bad && i < npaths; i++){
         if(!paths[i]) continue;
         sqlite3_reset(st); sqlite3_bind_text(st, 1, paths[i], -1, SQLITE_STATIC);
         int rc = sqlite3_step(st);
-        if(rc == SQLITE_ROW) ids[n++] = sqlite3_column_int(st, 0);
-        else if(rc != SQLITE_DONE){ free(ids); sqlite3_finalize(st); return -1; }
+        if(rc == SQLITE_ROW){ ids[n++] = sqlite3_column_int(st, 0); continue; }
+        if(rc != SQLITE_DONE){ bad = 1; break; }
+        sqlite3_reset(cue); sqlite3_bind_text(cue, 1, paths[i], -1, SQLITE_STATIC);
+        while((rc = sqlite3_step(cue)) == SQLITE_ROW){
+            if(n == cap){ int *ni = realloc(ids, (size_t)(cap *= 2) * sizeof *ids); if(!ni){ bad = 1; break; } ids = ni; }
+            ids[n++] = sqlite3_column_int(cue, 0);
+        }
+        if(rc != SQLITE_DONE) bad = 1;
     }
-    sqlite3_finalize(st);
+    sqlite3_finalize(st); sqlite3_finalize(cue);
+    if(!ids || bad){ free(ids); return -1; }
     if(n <= 0){ free(ids); return 0; }
     plan->list_type = 5; plan->ids = ids; plan->count = n;
     return 1;
+}
+/* CDOS: the queue entry a tap on this file starts: its plain row, else its first CUE/ISO track. >0 id, 0 none, -1 error */
+int mdb_path_play_id(const char *path){
+    sqlite3 *d = db(); if(!d || !path) return -1;
+    sqlite3_stmt *st; int id = -1;
+    if(sqlite3_prepare_v2(d, "SELECT ID FROM SONG WHERE PATH=?1 ORDER BY (COALESCE(IS_CUE,0)=1 OR COALESCE(IS_ISO,0)=1),TRACK,ID LIMIT 1;", -1, &st, NULL) != SQLITE_OK) return -1;
+    sqlite3_bind_text(st, 1, path, -1, SQLITE_STATIC);
+    int rc = sqlite3_step(st);
+    id = rc == SQLITE_ROW ? sqlite3_column_int(st, 0) : rc == SQLITE_DONE ? 0 : -1;
+    sqlite3_finalize(st);
+    return id;
 }
 
 /* CDOS Random: the folder of a random library song (an album = a folder). 1 found, 0 empty library, -1 error. */
 int mdb_random_song_dir(char *dir, int n){
     sqlite3 *d = db(); if(!d || !dir || n <= 0) return -1;
     sqlite3_stmt *st; int r = -1;
-    if(sqlite3_prepare_v2(d, "SELECT PATH FROM SONG WHERE COALESCE(IS_CUE,0)=0 AND COALESCE(IS_ISO,0)=0 "
+    if(sqlite3_prepare_v2(d, "SELECT PATH FROM SONG WHERE COALESCE(IS_ISO,0)=0 "
                              "ORDER BY RANDOM() LIMIT 1;", -1, &st, NULL) != SQLITE_OK) return -1;
     int rc = sqlite3_step(st);
     if(rc == SQLITE_ROW){
@@ -1126,7 +1147,7 @@ int mdb_dir_song_paths(const char *dir, char ***out){
     memcpy(lo, dir, dl); lo[dl] = '/'; lo[dl + 1] = 0;
     memcpy(hi, dir, dl); hi[dl] = '0'; hi[dl + 1] = 0;          /* '0' is the byte after '/' */
     sqlite3_stmt *st; int n = 0, cap = 0; char **v = NULL;
-    if(sqlite3_prepare_v2(d, "SELECT PATH FROM SONG WHERE PATH>=?1 AND PATH<?2 AND COALESCE(IS_CUE,0)=0 AND COALESCE(IS_ISO,0)=0;",
+    if(sqlite3_prepare_v2(d, "SELECT DISTINCT PATH FROM SONG WHERE PATH>=?1 AND PATH<?2 AND COALESCE(IS_ISO,0)=0;",
                           -1, &st, NULL) != SQLITE_OK){ free(lo); free(hi); return -1; }
     sqlite3_bind_text(st, 1, lo, -1, SQLITE_STATIC); sqlite3_bind_text(st, 2, hi, -1, SQLITE_STATIC);
     int rc;

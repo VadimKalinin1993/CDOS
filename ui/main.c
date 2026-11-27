@@ -2119,6 +2119,8 @@ static uint32_t g_book_noadopt_until = 0;  /* after an explicit play, don't let 
  * inside the already-loaded list always uses pos1. */
 /* Returns 1 if the play frame was sent, 0 if it was refused or the send failed. */
 static int ui_play_list_ex(int list_type, const char *name, int pos1, int build_idx){
+    fprintf(stderr, "cdos queue: list type %d (%s) pos %d\n", list_type,
+            list_type == 1 ? "WHOLE LIBRARY" : list_type == 5 ? "folder/plan" : name ? name : "", pos1);   /* CDOS diagnostics */
     if(cast_on() && build_idx < 0 && cast_list_type(list_type)) return cast_select_list(list_type, name, pos1, 0);   /* Cast 14e2 */
     if(local_start_refuse()) return 0;   /* Cast 14a: first, before any other check, write or frame */
     if(modes_output_busy()){ ui_toast("Switching output - try again"); return 0; }   /* an output switch (0666 re-init) is in flight or recovering */
@@ -5172,6 +5174,7 @@ int main(int argc, char **argv){
             quicksettings_refresh(vplaying);
             songinfo_set(&vs);
             npmenu_set(vs.have_track ? &vs : NULL, vplaying, ui_current_thumb_src());
+            folderbrowser_track_changed();
         }
         if(bl_state!=2 && (delivery&(UI_WAKE_ART|UI_WAKE_SHARP))){
             if(delivery&UI_WAKE_ART)ui_art_poll(NULL);
@@ -5194,6 +5197,7 @@ int main(int argc, char **argv){
                             vs.have_track?vs.artist:NULL,
                             ui_current_backdrop_src(), vs.have_track?vs.path:NULL);
             npmenu_set(vs.have_track ? &vs : NULL, vplaying, ui_current_thumb_src());
+            folderbrowser_track_changed();
         }
         /* spin the vinyl only while it's the visible, playing, lit Now Playing */
         ui_vinyl_spin(vplaying && screen_current()==SCR_NOWPLAYING && bl_state==0);
